@@ -435,6 +435,11 @@ typedef struct {
 typedef struct {
     VertexArrays3D vertices;          // Parallel arrays for all vertex data
     FaceArrays3D faces;               // Parallel arrays for all face data
+
+    /* Auto-scale metadata (non-destructive) */
+    Fixed32 auto_scale;               // Fixed32 scale factor applied (FIXED_ONE if none)
+    Fixed32 auto_center_x, auto_center_y, auto_center_z; // center used during scaling
+    int auto_scaled;                  // 1 if auto-scaling has been applied
 } Model3D;
 
 // ============================================================================
@@ -548,6 +553,10 @@ void transformToObserver(VertexArrays3D* vtx, int angle_h_deg, int angle_v_deg, 
 void projectTo2D(VertexArrays3D* vtx, int angle_w_deg);
 Fixed32 computeDistanceToFit(VertexArrays3D* vtx, float margin);
 void getObserverParams(ObserverParams* params, Model3D* model);
+
+/* Auto-scaling helpers (non-destructive): allow automatic scaling on import with rollback */
+void autoScaleModel(Model3D* model, float target_max_dim, float min_scale, float max_scale, int center_flag);
+void revertAutoScaleModel(Model3D* model);
 
 /**
  * GRAPHIC RENDERING FUNCTIONS
@@ -892,6 +901,13 @@ Model3D* createModel3D(void) {
     }
     int n = MAX_VERTICES;
     model->vertices.vertex_count = n;
+
+    // Initialize auto-scale metadata
+    model->auto_scale = FIXED_ONE;
+    model->auto_center_x = 0;
+    model->auto_center_y = 0;
+    model->auto_center_z = 0;
+    model->auto_scaled = 0;
     
     // Step 2: Allocate vertex arrays using malloc (handles bank crossing better)
     // Note: malloc() should handle bank boundaries better than NewHandle()
@@ -1348,6 +1364,17 @@ void getObserverParams(ObserverParams* params, Model3D* model) {
             if (model != NULL) {
                 params->distance = computeDistanceToFit(&model->vertices, 0.92f);
                 printf("Auto-fit distance: %.2f\n", FIXED_TO_FLOAT(params->distance));
+
+                // Prompt for optional auto-scaling (non-destructive)
+                printf("Auto-scale model to fit view? (Y/n): ");
+                if (fgets(input, sizeof(input), stdin) != NULL) {
+                    input[strcspn(input, "\n")] = 0;
+                    if (strlen(input) == 0 || input[0] == 'Y' || input[0] == 'y') {
+                        // Target max dimension in world units (tunable)
+                        autoScaleModel(model, 50.0f, 0.01f, 1000.0f, 1);  // increased default target to make models larger on screen
+                        printf("Auto-scale applied (factor %.4f). Press 'r' to revert.\n", FIXED_TO_FLOAT(model->auto_scale));
+                    }
+                }
             } else {
                 params->distance = FLOAT_TO_FIXED(30.0);
             }
@@ -1906,6 +1933,89 @@ Fixed32 computeDistanceToFit(VertexArrays3D* vtx, float margin) {
 }
 
 
+// ==============================================================
+// Auto-scaling helpers
+// Non-destructive: subtract center, apply scale, store metadata
+// Provide a revert function to restore original coordinates
+// ==============================================================
+void autoScaleModel(Model3D* model, float target_max_dim, float min_scale, float max_scale, int center_flag) {
+    if (model == NULL) return;
+    VertexArrays3D* vtx = &model->vertices;
+    int n = vtx->vertex_count;
+    if (n <= 0) return;
+
+    // If the model was already auto-scaled, revert first to avoid cumulative scaling
+    if (model->auto_scaled) {
+        revertAutoScaleModel(model);
+    }
+
+    Fixed32 minx = vtx->x[0], maxx = vtx->x[0];
+    Fixed32 miny = vtx->y[0], maxy = vtx->y[0];
+    Fixed32 minz = vtx->z[0], maxz = vtx->z[0];
+    for (int i = 1; i < n; ++i) {
+        Fixed32 xi = vtx->x[i];
+        Fixed32 yi = vtx->y[i];
+        Fixed32 zi = vtx->z[i];
+        if (xi < minx) minx = xi; if (xi > maxx) maxx = xi;
+        if (yi < miny) miny = yi; if (yi > maxy) maxy = yi;
+        if (zi < minz) minz = zi; if (zi > maxz) maxz = zi;
+    }
+
+    float width = FIXED_TO_FLOAT(FIXED_SUB(maxx, minx));
+    float height = FIXED_TO_FLOAT(FIXED_SUB(maxy, miny));
+    float depth = FIXED_TO_FLOAT(FIXED_SUB(maxz, minz));
+    float maxdim = fmaxf(width, fmaxf(height, depth));
+    if (maxdim <= 0.0f) return;
+
+    float scale_f = target_max_dim / maxdim;
+    if (scale_f < min_scale) scale_f = min_scale;
+    if (scale_f > max_scale) scale_f = max_scale;
+    Fixed32 scale_fixed = FLOAT_TO_FIXED(scale_f);
+
+    Fixed32 center_x = FIXED_DIV(FIXED_ADD(minx, maxx), INT_TO_FIXED(2));
+    Fixed32 center_y = FIXED_DIV(FIXED_ADD(miny, maxy), INT_TO_FIXED(2));
+    Fixed32 center_z = FIXED_DIV(FIXED_ADD(minz, maxz), INT_TO_FIXED(2));
+
+    // Apply: subtract center (if requested) then scale
+    for (int i = 0; i < n; ++i) {
+        if (center_flag) {
+            vtx->x[i] = FIXED_MUL_64(FIXED_SUB(vtx->x[i], center_x), scale_fixed);
+            vtx->y[i] = FIXED_MUL_64(FIXED_SUB(vtx->y[i], center_y), scale_fixed);
+            vtx->z[i] = FIXED_MUL_64(FIXED_SUB(vtx->z[i], center_z), scale_fixed);
+        } else {
+            vtx->x[i] = FIXED_MUL_64(vtx->x[i], scale_fixed);
+            vtx->y[i] = FIXED_MUL_64(vtx->y[i], scale_fixed);
+            vtx->z[i] = FIXED_MUL_64(vtx->z[i], scale_fixed);
+        }
+    }
+
+    model->auto_scale = scale_fixed;
+    model->auto_center_x = center_x;
+    model->auto_center_y = center_y;
+    model->auto_center_z = center_z;
+    model->auto_scaled = 1;
+}
+
+void revertAutoScaleModel(Model3D* model) {
+    if (model == NULL || !model->auto_scaled) return;
+    VertexArrays3D* vtx = &model->vertices;
+    int n = vtx->vertex_count;
+    if (n <= 0) { model->auto_scaled = 0; return; }
+    Fixed32 scale = model->auto_scale;
+    if (scale == 0) return; // avoid div by zero
+
+    // Reverse: divide by scale then add center back
+    for (int i = 0; i < n; ++i) {
+        vtx->x[i] = FIXED_ADD(FIXED_DIV_64(vtx->x[i], scale), model->auto_center_x);
+        vtx->y[i] = FIXED_ADD(FIXED_DIV_64(vtx->y[i], scale), model->auto_center_y);
+        vtx->z[i] = FIXED_ADD(FIXED_DIV_64(vtx->z[i], scale), model->auto_center_z);
+    }
+
+    model->auto_scaled = 0;
+    model->auto_scale = FIXED_ONE;
+}
+
+
 // Helper macro to swap face indices in the sorted_face_indices array
 // (We swap indices, not the faces themselves, to keep the buffer intact)
 #define SWAP_FACE(faces, i, j) \
@@ -2138,6 +2248,16 @@ void DoText() {
                 printf("Press any key to continue...\n");
                 keypress();
                 goto loopReDraw;
+
+            case 82:  // 'R' - revert auto-scale
+            case 114: // 'r'
+                if (model != NULL && model->auto_scaled) {
+                    revertAutoScaleModel(model);
+                    printf("Auto-scale reverted.\n");
+                } else {
+                    printf("No auto-scale to revert.\n");
+                }
+                goto bigloop;
 
             case 65:  // 'A' - decrease distance
             case 97:  // 'a'
