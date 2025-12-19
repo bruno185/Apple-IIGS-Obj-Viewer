@@ -236,7 +236,7 @@ static inline int normalize_deg(int deg) {
 #define ENABLE_DEBUG_SAVE 0     // 1 = Enable debug save (SLOW!), 0 = Disable
 //#define PERFORMANCE_MODE 0      // 1 = Optimized performance mode, 0 = Debug mode
 // OPTIMIZATION: Performance mode - disable printf
-#define PERFORMANCE_MODE 0      // 1 = no printf, 0 = normal printf
+#define PERFORMANCE_MODE 1      // 1 = no printf, 0 = normal printf
 
 #define MAX_LINE_LENGTH 256     // Maximum file line size
 #define MAX_VERTICES 6000       // Maximum vertices in a 3D model
@@ -1387,7 +1387,10 @@ void getObserverParams(ObserverParams* params, Model3D* model) {
     }
 
     // Debug: show parsed observer angles in degrees
+    if (!PERFORMANCE_MODE)
+    {
     printf("Observer angles (degrees) - H: %d, V: %d, W: %d\n", params->angle_h, params->angle_v, params->angle_w);
+    }
 }
 
 
@@ -1462,6 +1465,7 @@ void processModelFast(Model3D* model, ObserverParams* params, const char* filena
     t_start = GetTick();
     calculateFaceDepths(model, NULL, model->faces.face_count);
     t_end = GetTick();
+    if (!PERFORMANCE_MODE)
     {
         long elapsed = t_end - t_start;
         double ms = ((double)elapsed * 1000.0) / 60.0; // 60 ticks per second
@@ -2156,8 +2160,8 @@ void DoText() {
         printf("===================================\n");
         printf("       3D OBJ file viewer\n");
         printf("===================================\n\n");
-        printf("       A tribute to Robert DONY\n");
-        printf("       Author of \"Calcul des parties cach\xC3\xA9es\" (Masson, 1986)\n\n");
+        printf(" A tribute to Robert DONY\n");
+        printf(" Author of \"Calcul des parties cachees\" (Masson, 1986)\n\n");
 
         // Creer le modele 3D
         model = createModel3D();
