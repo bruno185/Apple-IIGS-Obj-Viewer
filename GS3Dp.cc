@@ -19,7 +19,6 @@
  * FEATURES:
  *   - Reading OBJ files (vertices "v" and faces "f")
  *   - 3D transformations using Fixed32 16.16 arithmetic
- *   - Degree-to-radian conversion via lookup table (361 entries)
  *   - 64-bit arithmetic for overflow-safe multiplication/division
  *   - Perspective projection on 2D screen
  *   - Graphic rendering with QuickDraw
@@ -100,8 +99,6 @@ typedef long long Fixed64;      // 64-bit for intermediate calculations
 #define FIXED_ONE       FIXED_SCALE           // 1.0 in 16.16
 #define FIXED_PI_180    1143LL                // PI/180 ≈ 0.017453293 in 16.16 (64-bit)
 
-
-// Fast degree to radian conversion using lookup table
 // Lookup tables: sin(0..359) and cos(0..359) in Fixed32 16.16
 static const Fixed32 sin_table[360] = {
     0, 1144, 2287, 3430, 4572, 5712, 6850, 7987, 9121, 10252,
@@ -180,18 +177,6 @@ static const Fixed32 cos_table[360] = {
     64540, 64729, 64898, 65048, 65177, 65287, 65376, 65446, 65496, 65526,
 };
 
-// Fixed32-based helpers (kept for backward compatibility)
-static inline Fixed32 sin_deg(Fixed32 angle) {
-    int deg = (int)(angle >> FIXED_SHIFT);
-    deg %= 360; if (deg < 0) deg += 360;
-    return sin_table[deg];
-}
-static inline Fixed32 cos_deg(Fixed32 angle) {
-    int deg = (int)(angle >> FIXED_SHIFT);
-    deg %= 360; if (deg < 0) deg += 360;
-    return cos_table[deg];
-}
-
 // Integer-degree sin/cos helpers (direct table lookup)
 static inline Fixed32 sin_deg_int(int deg) {
     deg %= 360;
@@ -257,7 +242,6 @@ static inline int normalize_deg(int deg) {
 #define MAX_VERTICES 6000       // Maximum vertices in a 3D model
 #define MAX_FACES 6000          // Maximum faces in a 3D model (using parallel arrays)
 #define MAX_FACE_VERTICES 6     // Maximum vertices per face (triangles/quads/hexagons)
-#define PI 3.14159265359        // Mathematical constant Pi
 #define CENTRE_X 160            // Screen center in X (320/2)
 #define CENTRE_Y 100            // Screen center in Y (200/2)
 //#define mode 640               // Graphics mode 640x200 pixels
@@ -461,20 +445,9 @@ typedef struct {
  * FIXED POINT MATHEMATICAL FUNCTIONS
  * ===================================
  */
-
-/**
- * Fixed-point trigonometric functions
- * Uses Taylor series approximation for sin/cos
- */
-Fixed32 sin_fixed(Fixed32 angle);
-Fixed32 cos_fixed(Fixed32 angle);
-
-
 /**
  * OBJ FILE READING FUNCTIONS
  * ===========================
- */
-
 /**
  * readVertices
  * 
@@ -885,63 +858,13 @@ void painter_newell_sancha(Model3D* model, int face_count) {
         free(ordered_pairs);
     }    
 }
-
 /**
  * UTILITY FUNCTIONS
  * ==================
  */
-
-
-// ============================================================================
-//                    FIXED POINT MATHEMATICAL FUNCTIONS
-// ============================================================================
-
-/**
- * SINE FUNCTION - Fixed Point Implementation
- * =========================================== 
- * 
- * Calculates sin(x) using Taylor series approximation.
- * Input: angle in radians (fixed point 16.16)
- * Output: sin(angle) in fixed point 16.16
- * 
- * Taylor series: sin(x) = x - x³/3! + x⁵/5! - x⁷/7! + ...
- * Optimized for range [-2π, 2π] with angle normalization.
- */
-Fixed32 sin_fixed(Fixed32 angle) {
-    // Normalize angle to [-PI, PI] range
-    while (angle > FIXED_PI) angle = FIXED_SUB(angle, FIXED_2PI);
-    while (angle < -FIXED_PI) angle = FIXED_ADD(angle, FIXED_2PI);
-    
-    Fixed32 x = angle;
-    Fixed32 x2 = FIXED_MUL_64(x, x);       // x²
-    Fixed32 x3 = FIXED_MUL_64(x2, x);      // x³
-    Fixed32 x5 = FIXED_MUL_64(x3, x2);     // x⁵
-    Fixed32 x7 = FIXED_MUL_64(x5, x2);     // x⁷
-    
-    // Taylor series: sin(x) = x - x³/6 + x⁵/120 - x⁷/5040
-    Fixed32 result = x;
-    result = FIXED_SUB(result, FIXED_DIV_64(x3, INT_TO_FIXED(6)));      // -x³/3!
-    result = FIXED_ADD(result, FIXED_DIV_64(x5, INT_TO_FIXED(120)));     // +x⁵/5!
-    result = FIXED_SUB(result, FIXED_DIV_64(x7, INT_TO_FIXED(5040)));    // -x⁷/7!
-    
-    return result;
-}
-
-/**
- * COSINE FUNCTION - Fixed Point Implementation
- * ============================================
- * 
- * Calculates cos(x) using the identity: cos(x) = sin(x + π/2)
- * More efficient than separate Taylor series.
- */
-Fixed32 cos_fixed(Fixed32 angle) {
-    return sin_fixed(FIXED_ADD(angle, FIXED_PI_2));
-}
-
 // ============================================================================
 //                    3D MODEL MANAGEMENT FUNCTIONS
 // ============================================================================
-
 /**
  * CREATING A NEW 3D MODEL
  * ========================
@@ -1210,7 +1133,6 @@ Model3D* createModel3D(void) {
     model->faces.z_maxHandle = NULL;
     model->faces.display_flagHandle = NULL;
     model->faces.sorted_face_indicesHandle = NULL;
-    model->faces.total_indices = 0;
     
     // Allocate sorted_face_indices array: nf * 4 bytes = 24KB max
     model->faces.sorted_face_indices = (int*)malloc(nf * sizeof(int));
@@ -1279,7 +1201,6 @@ void destroyModel3D(Model3D* model) {
         if (model->faces.z_max) free(model->faces.z_max);
         if (model->faces.z_mean) free(model->faces.z_mean);
         if (model->faces.z_min) free(model->faces.z_min);
-        if (model->faces.z_max) free(model->faces.z_max);
         if (model->faces.plane_a) free(model->faces.plane_a);
         if (model->faces.plane_b) free(model->faces.plane_b);
         if (model->faces.plane_c) free(model->faces.plane_c);
