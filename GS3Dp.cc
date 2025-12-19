@@ -1859,21 +1859,33 @@ void calculateFaceDepths(Model3D* model, Face3D* faces, int face_count) {
 // Compute an observation distance (Fixed32) that fits the model within the view.
 // Uses the model bounding box and projection scale to estimate a conservative distance
 // so the model fits with the requested margin (0..1).
+// Optimized: avoid per-vertex float conversions by computing min/max in Fixed32 then
+// convert to float only once per axis (fewer expensive float ops for large models).
 Fixed32 computeDistanceToFit(VertexArrays3D* vtx, float margin) {
     if (vtx == NULL || vtx->vertex_count <= 0) return FLOAT_TO_FIXED(30.0f);
-    float minx = 1e30f, miny = 1e30f, minz = 1e30f;
-    float maxx = -1e30f, maxy = -1e30f, maxz = -1e30f;
-    for (int i = 0; i < vtx->vertex_count; ++i) {
-        float x = FIXED_TO_FLOAT(vtx->x[i]);
-        float y = FIXED_TO_FLOAT(vtx->y[i]);
-        float z = FIXED_TO_FLOAT(vtx->z[i]);
-        if (x < minx) minx = x; if (x > maxx) maxx = x;
-        if (y < miny) miny = y; if (y > maxy) maxy = y;
-        if (z < minz) minz = z; if (z > maxz) maxz = z;
+
+    int n = vtx->vertex_count;
+    // Initialize mins/maxs with first vertex to avoid large sentinels
+    Fixed32 minx_f = vtx->x[0], maxx_f = vtx->x[0];
+    Fixed32 miny_f = vtx->y[0], maxy_f = vtx->y[0];
+    Fixed32 minz_f = vtx->z[0], maxz_f = vtx->z[0];
+
+    for (int i = 1; i < n; ++i) {
+        Fixed32 xi = vtx->x[i];
+        Fixed32 yi = vtx->y[i];
+        Fixed32 zi = vtx->z[i];
+        if (xi < minx_f) minx_f = xi;
+        if (xi > maxx_f) maxx_f = xi;
+        if (yi < miny_f) miny_f = yi;
+        if (yi > maxy_f) maxy_f = yi;
+        if (zi < minz_f) minz_f = zi;
+        if (zi > maxz_f) maxz_f = zi;
     }
-    float width = maxx - minx;
-    float height = maxy - miny;
-    float depth = maxz - minz;
+
+    // Convert deltas to float only once
+    float width = FIXED_TO_FLOAT(FIXED_SUB(maxx_f, minx_f));
+    float height = FIXED_TO_FLOAT(FIXED_SUB(maxy_f, miny_f));
+    float depth = FIXED_TO_FLOAT(FIXED_SUB(maxz_f, minz_f));
     float half_w = width * 0.5f;
     float half_h = height * 0.5f;
     float half_depth = depth * 0.5f;
