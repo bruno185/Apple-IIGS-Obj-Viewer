@@ -2156,6 +2156,8 @@ void DoText() {
         printf("===================================\n");
         printf("       3D OBJ file viewer\n");
         printf("===================================\n\n");
+        printf("       A tribute to Robert DONY\n");
+        printf("       Author of \"Calcul des parties cach\xC3\xA9es\" (Masson, 1986)\n\n");
 
         // Creer le modele 3D
         model = createModel3D();
