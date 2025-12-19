@@ -1516,8 +1516,9 @@ int readVertices(const char* filename, VertexArrays3D* vtx, int max_vertices) {
                 float x, y, z;  // Temporary reading in float
                 if (sscanf(line + 2, "%f %f %f", &x, &y, &z) == 3) {
                     vtx->x[vertex_count] = FLOAT_TO_FIXED(x);
-                    vtx->y[vertex_count] = FLOAT_TO_FIXED(y);
-                    vtx->z[vertex_count] = FLOAT_TO_FIXED(z);
+                    // OBJ files often use Z as up; convert to viewer convention by swapping axes
+                    vtx->y[vertex_count] = FLOAT_TO_FIXED(z);   // treat OBJ Z as up
+                    vtx->z[vertex_count] = FLOAT_TO_FIXED(y);  // rotate -90° around X, corrected orientation
                     vertex_count++;
                     if (vertex_count % 10 == 0) printf("..");
 
@@ -1671,6 +1672,7 @@ void transformToObserver(VertexArrays3D* vtx, int angle_h_deg, int angle_v_deg, 
 
     for (i = 0; i < vtx->vertex_count; i++) {
         x = vtx->x[i];
+        y = vtx->y[i];  // FIX: initialize y before use
         z = vtx->z[i];
         vtx->xo[i] = FIXED_ADD(
             FIXED_MUL_64(x, cos_h_cos_v),
