@@ -242,7 +242,7 @@ static inline int normalize_deg(int deg) {
 #define ENABLE_DEBUG_SAVE 0     // 1 = Enable debug save (SLOW!), 0 = Disable
 //#define PERFORMANCE_MODE 0      // 1 = Optimized performance mode, 0 = Debug mode
 // OPTIMIZATION: Performance mode - disable printf
-#define PERFORMANCE_MODE 0      // 1 = no printf, 0 = normal printf
+#define PERFORMANCE_MODE 1      // 1 = no printf, 0 = normal printf
 
 #define MAX_LINE_LENGTH 256     // Maximum file line size
 #define MAX_VERTICES 6000       // Maximum vertices in a 3D model
@@ -1401,7 +1401,6 @@ void getObserverParams(ObserverParams* params, Model3D* model) {
     printf("\nObserver parameters:\n");
     printf("============================\n");
     printf("(Press ENTER to use default values - Distance will auto-fit the model)\n");
-    printf("(Enter 'debug' to see values used)\n");
     
     // Input horizontal angle (rotation around Y)
     printf("Horizontal angle (degrees, default 30): ");
@@ -2695,6 +2694,11 @@ void DoText() {
                 printf("    Horizontal Angle: %d deg\n", params.angle_h);
                 printf("    Vertical Angle: %d deg\n", params.angle_v);
                 printf("    Screen Rotation Angle: %d deg\n", params.angle_w);
+                if (model->auto_scaled) {
+                    printf("    Auto-scale: ON (factor %.4f, centered: %s)\n", FIXED_TO_FLOAT(model->auto_scale), model->auto_centered ? "yes" : "no");
+                } else {
+                    printf("    Auto-scale: OFF\n");
+                }
                 printf("===================================\n");
                 printf("\n");
                 printf("Press any key to continue...\n");
@@ -2711,103 +2715,45 @@ void DoText() {
                 }
                 goto bigloop;
 
-            case 43:  // '+' - increase auto-scale by 10%
+            case 43:  // '+' - ensure auto-fit then increase distance by 10%
             case 61:  // '=' also acts as '+' on some keyboards
-                if (model != NULL && model->auto_scaled && model->orig_x) {
-                    float curr = FIXED_TO_FLOAT(model->auto_scale);
-                    float newf = curr * 1.1f;
-                    if (newf > 1000.0f) newf = 1000.0f;
-                    Fixed32 new_fixed = FLOAT_TO_FIXED(newf);
-                    VertexArrays3D* vtxp = &model->vertices;
-                    Fixed32 cx = model->auto_center_x;
-                    Fixed32 cy = model->auto_center_y;
-                    Fixed32 cz = model->auto_center_z;
-                    int nn = vtxp->vertex_count;
-                    for (int ii = 0; ii < nn; ++ii) {
-                        Fixed32 ox = model->orig_x[ii];
-                        Fixed32 oy = model->orig_y[ii];
-                        Fixed32 oz = model->orig_z[ii];
-                        if (model->auto_centered) {
-                            vtxp->x[ii] = FIXED_MUL_64(FIXED_SUB(ox, cx), new_fixed);
-                            vtxp->y[ii] = FIXED_MUL_64(FIXED_SUB(oy, cy), new_fixed);
-                            vtxp->z[ii] = FIXED_MUL_64(FIXED_SUB(oz, cz), new_fixed);
-                        } else {
-                            vtxp->x[ii] = FIXED_MUL_64(ox, new_fixed);
-                            vtxp->y[ii] = FIXED_MUL_64(oy, new_fixed);
-                            vtxp->z[ii] = FIXED_MUL_64(oz, new_fixed);
-                        }
+                if (model != NULL) {
+                    if (!model->auto_scaled) {
+                        float default_target = 200.0f;
+                        fitModelToView(model, &params, default_target, 0.92f, 0.99f, 1);
+                        printf("Auto-fit applied (factor %.4f). Press 'r' to revert or +/- to adjust distance.\n", FIXED_TO_FLOAT(model->auto_scale));
                     }
-                    model->auto_scale = new_fixed;
-                    {
-                        float ratio = newf / curr;
-                        if (model->bs_valid) {
-                            model->bs_cx *= ratio;
-                            model->bs_cy *= ratio;
-                            model->bs_cz *= ratio;
-                            model->bs_r *= ratio;
-                            params.distance = computeDistanceFromBoundingSphere(model, 0.92f);
-                        } else {
-                            params.distance = computeDistanceToFit(&model->vertices, 0.92f);
-                        }
-                    }
-                    printf("Auto-scale increased x1.1 -> factor %.4f. New distance: %.2f\n", newf, FIXED_TO_FLOAT(params.distance));
+                    params.distance = params.distance + (params.distance / 10);
+                    printf("Distance increased -> %.2f\n", FIXED_TO_FLOAT(params.distance));
                 } else {
-                    printf("No auto-scale to adjust.\n");
+                    printf("No model loaded.\n");
                 }
                 goto bigloop;
 
-            case 45:  // '-' - decrease auto-scale by 10%
-                if (model != NULL && model->auto_scaled && model->orig_x) {
-                    float curr = FIXED_TO_FLOAT(model->auto_scale);
-                    float newf = curr / 1.1f;
-                    if (newf < 0.001f) newf = 0.001f;
-                    Fixed32 new_fixed = FLOAT_TO_FIXED(newf);
-                    VertexArrays3D* vtxp = &model->vertices;
-                    Fixed32 cx = model->auto_center_x;
-                    Fixed32 cy = model->auto_center_y;
-                    Fixed32 cz = model->auto_center_z;
-                    int nn = vtxp->vertex_count;
-                    for (int ii = 0; ii < nn; ++ii) {
-                        Fixed32 ox = model->orig_x[ii];
-                        Fixed32 oy = model->orig_y[ii];
-                        Fixed32 oz = model->orig_z[ii];
-                        if (model->auto_centered) {
-                            vtxp->x[ii] = FIXED_MUL_64(FIXED_SUB(ox, cx), new_fixed);
-                            vtxp->y[ii] = FIXED_MUL_64(FIXED_SUB(oy, cy), new_fixed);
-                            vtxp->z[ii] = FIXED_MUL_64(FIXED_SUB(oz, cz), new_fixed);
-                        } else {
-                            vtxp->x[ii] = FIXED_MUL_64(ox, new_fixed);
-                            vtxp->y[ii] = FIXED_MUL_64(oy, new_fixed);
-                            vtxp->z[ii] = FIXED_MUL_64(oz, new_fixed);
-                        }
+            case 45:  // '-' - ensure auto-fit then decrease distance by 10%
+                if (model != NULL) {
+                    if (!model->auto_scaled) {
+                        float default_target = 200.0f;
+                        fitModelToView(model, &params, default_target, 0.92f, 0.99f, 1);
+                        printf("Auto-fit applied (factor %.4f). Press 'r' to revert or +/- to adjust distance.\n", FIXED_TO_FLOAT(model->auto_scale));
                     }
-                    model->auto_scale = new_fixed;
-                    {
-                        float ratio = newf / curr;
-                        if (model->bs_valid) {
-                            model->bs_cx *= ratio;
-                            model->bs_cy *= ratio;
-                            model->bs_cz *= ratio;
-                            model->bs_r *= ratio;
-                            params.distance = computeDistanceFromBoundingSphere(model, 0.92f);
-                        } else {
-                            params.distance = computeDistanceToFit(&model->vertices, 0.92f);
-                        }
-                    }
-                    printf("Auto-scale decreased /1.1 -> factor %.4f. New distance: %.2f\n", newf, FIXED_TO_FLOAT(params.distance));
+                    params.distance = params.distance - (params.distance / 10);
+                    printf("Distance decreased -> %.2f\n", FIXED_TO_FLOAT(params.distance));
                 } else {
-                    printf("No auto-scale to adjust.\n");
+                    printf("No model loaded.\n");
                 }
                 goto bigloop;
 
             case 65:  // 'A' - decrease distance
             case 97:  // 'a'
                 params.distance = params.distance - (params.distance / 10);
+                printf("Distance decreased -> %.2f\n", FIXED_TO_FLOAT(params.distance));
                 goto bigloop;
 
             case 90:  // 'Z' - increase distance  
             case 122: // 'z'
                 params.distance = params.distance + (params.distance / 10);
+                printf("Distance increased -> %.2f\n", FIXED_TO_FLOAT(params.distance));
                 goto bigloop;
 
             case 21:  // Right arrow - increase horizontal angle
@@ -2845,6 +2791,12 @@ void DoText() {
             case 110: // 'n'
                 destroyModel3D(model);
                 goto newmodel;
+
+            case 75:  // 'K' - edit angles/distance (no reload; ENTER may auto-fit)
+            case 107: // 'k'
+                getObserverParams(&params, model);
+                printf("Observer parameters updated.\n");
+                goto bigloop;
         
             // dispaly help
             case 72:  // 'H'
@@ -2854,6 +2806,8 @@ void DoText() {
                 printf("===================================\n\n");
                 printf("Space: Display model info\n");
                 printf("A/Z: Increase/Decrease distance\n");
+                printf("+/-: Apply auto-fit if none, then increase/decrease distance (use 'r' to revert auto-fit)\n");
+                printf("K: Edit angles/distance (ENTER may trigger auto-fit)\n");
                 printf("Arrow Left/Right: Decrease/Increase horizontal angle\n");
                 printf("Arrow Up/Down: Increase/Decrease vertical angle\n");
                 printf("W/X: Increase/Decrease screen rotation angle\n");
