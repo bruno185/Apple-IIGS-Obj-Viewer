@@ -59,6 +59,12 @@
 #include <window.h>     // Window management
 #include <orca.h>       // ORCA specific functions (startgraph, etc.)
 
+
+#pragma memorymodel 1
+
+segment "data";
+
+// ============================================================================
 // --- Variable globale pour la vérification des indices de sommet dans readFaces ---
 // (Ajouté pour garantir la cohérence OBJ)
 int readVertices_last_count = 0;
@@ -440,6 +446,16 @@ typedef struct {
     Fixed32 auto_scale;               // Fixed32 scale factor applied (FIXED_ONE if none)
     Fixed32 auto_center_x, auto_center_y, auto_center_z; // center used during scaling
     int auto_scaled;                  // 1 if auto-scaling has been applied
+    int auto_centered;                // 1 if auto-scale used centering
+
+    /* Optional backup of original coordinates to allow exact revert and dynamic scale adjustments */
+    Fixed32 *orig_x;                   // NULL if no backup
+    Fixed32 *orig_y;
+    Fixed32 *orig_z;
+    float *radius_buf;            // scratch buffer for radii (squared distances) (float for cache)
+    int radius_buf_capacity;        // capacity of radius_buf
+    float *coord_buf;               // scratch buffer for converted float coordinates (x,y,z interleaved)
+    int coord_buf_capacity;         // capacity in number of vertices for coord_buf
 } Model3D;
 
 // ============================================================================
@@ -557,6 +573,14 @@ void getObserverParams(ObserverParams* params, Model3D* model);
 /* Auto-scaling helpers (non-destructive): allow automatic scaling on import with rollback */
 void autoScaleModel(Model3D* model, float target_max_dim, float min_scale, float max_scale, int center_flag);
 void revertAutoScaleModel(Model3D* model);
+
+// Fit model to view using sphere metric with percentile trimming (non-destructive)
+void fitModelToView(Model3D* model, ObserverParams* params, float target_max_dim, float margin, float percentile, int center_flag);
+
+// Internal helpers: backup/restore original vertex arrays
+void backupModelCoords(Model3D* model);
+void freeBackupModelCoords(Model3D* model);
+
 
 /**
  * GRAPHIC RENDERING FUNCTIONS
@@ -908,6 +932,14 @@ Model3D* createModel3D(void) {
     model->auto_center_y = 0;
     model->auto_center_z = 0;
     model->auto_scaled = 0;
+    model->auto_centered = 0;
+    model->orig_x = NULL;
+    model->orig_y = NULL;
+    model->orig_z = NULL;
+    model->radius_buf = NULL;
+    model->radius_buf_capacity = 0;
+    model->coord_buf = NULL;
+    model->coord_buf_capacity = 0;
     
     // Step 2: Allocate vertex arrays using malloc (handles bank crossing better)
     // Note: malloc() should handle bank boundaries better than NewHandle()
@@ -1227,12 +1259,20 @@ void destroyModel3D(Model3D* model) {
         if (model->faces.maxy) free(model->faces.maxy);
         if (model->faces.display_flag) free(model->faces.display_flag);
         if (model->faces.sorted_face_indices) free(model->faces.sorted_face_indices);
+
+        // Free optional buffers and backups
+        if (model->orig_x) free(model->orig_x);
+        if (model->orig_y) free(model->orig_y);
+        if (model->orig_z) free(model->orig_z);
+        if (model->radius_buf) free(model->radius_buf);
+        if (model->coord_buf) free(model->coord_buf);
         
         // Free main structure
         free(model);
     }
 }
 
+segment "code";
 /**
  * COMPLETE 3D MODEL LOADING
  * ==========================
@@ -1354,36 +1394,41 @@ void getObserverParams(ObserverParams* params, Model3D* model) {
         params->angle_w = 0;          // No rotation by default (degrees)
     }
 
-    // Input observation distance (zoom/perspective). Press ENTER to auto-fit to model size
-    printf("Distance (ENTER = auto-fit): ");
+    // Input observation distance (zoom/perspective).
+    // Press ENTER = auto-scale + center using sphere-based fit (default target),
+    // or enter a numeric value to use that distance directly (no scaling).
+    printf("Distance (ENTER = auto-scale & center, or enter a value): ");
+
     if (fgets(input, sizeof(input), stdin) != NULL) {
         // Remove newline
         input[strcspn(input, "\n")] = 0;
         if (strlen(input) == 0) {
-            // Auto-compute distance from model size
+            // User pressed ENTER: perform full auto-fit + centering using default target
             if (model != NULL) {
-                params->distance = computeDistanceToFit(&model->vertices, 0.92f);
-                printf("Auto-fit distance: %.2f\n", FIXED_TO_FLOAT(params->distance));
-
-                // Prompt for optional auto-scaling (non-destructive)
-                printf("Auto-scale model to fit view? (Y/n): ");
-                if (fgets(input, sizeof(input), stdin) != NULL) {
-                    input[strcspn(input, "\n")] = 0;
-                    if (strlen(input) == 0 || input[0] == 'Y' || input[0] == 'y') {
-                        // Target max dimension in world units (tunable)
-                        autoScaleModel(model, 50.0f, 0.01f, 1000.0f, 1);  // increased default target to make models larger on screen
-                        printf("Auto-scale applied (factor %.4f). Press 'r' to revert.\n", FIXED_TO_FLOAT(model->auto_scale));
-                    }
+                float default_target = 200.0f;
+                fitModelToView(model, params, default_target, 0.92f, 0.99f, 1);
+                // fitModelToView sets params->distance on success; use fallback if needed
+                if (params->distance == 0) {
+                    params->distance = computeDistanceToFit(&model->vertices, 0.92f);
                 }
+                printf("Auto-fit/sphere applied (factor %.4f). Press 'r' to revert or +/- to adjust.\n", FIXED_TO_FLOAT(model->auto_scale));
             } else {
                 params->distance = FLOAT_TO_FIXED(30.0);
             }
         } else {
+            // User provided a distance value -> use it directly (no auto-scale)
             params->distance = FLOAT_TO_FIXED(atof(input)); // String->Fixed32 conversion
         }
     } else {
-        if (model != NULL) params->distance = computeDistanceToFit(&model->vertices, 0.92f);
-        else params->distance = FLOAT_TO_FIXED(30.0);        // Default distance: balanced view (Fixed Point)
+        // fgets failed; default behavior: if we have a model, auto-fit, else fallback distance
+        if (model != NULL) {
+            float default_target = 200.0f;
+            fitModelToView(model, params, default_target, 0.92f, 0.99f, 1);
+            if (params->distance == 0) params->distance = computeDistanceToFit(&model->vertices, 0.92f);
+            printf("Auto-fit/sphere applied (factor %.4f). Press 'r' to revert or +/- to adjust.\n", FIXED_TO_FLOAT(model->auto_scale));
+        } else {
+            params->distance = FLOAT_TO_FIXED(30.0);        // Default distance: balanced view (Fixed Point)
+        }
     }
 
     // Debug: show parsed observer angles in degrees
@@ -1980,16 +2025,22 @@ void autoScaleModel(Model3D* model, float target_max_dim, float min_scale, float
     Fixed32 center_y = FIXED_DIV(FIXED_ADD(miny, maxy), INT_TO_FIXED(2));
     Fixed32 center_z = FIXED_DIV(FIXED_ADD(minz, maxz), INT_TO_FIXED(2));
 
-    // Apply: subtract center (if requested) then scale
+    // Backup original coordinates for exact revert and ensure non-cumulative scaling
+    backupModelCoords(model);
+
+    // Apply: subtract center (if requested) then scale, using original coordinates as base
     for (int i = 0; i < n; ++i) {
+        Fixed32 ox = model->orig_x ? model->orig_x[i] : vtx->x[i];
+        Fixed32 oy = model->orig_y ? model->orig_y[i] : vtx->y[i];
+        Fixed32 oz = model->orig_z ? model->orig_z[i] : vtx->z[i];
         if (center_flag) {
-            vtx->x[i] = FIXED_MUL_64(FIXED_SUB(vtx->x[i], center_x), scale_fixed);
-            vtx->y[i] = FIXED_MUL_64(FIXED_SUB(vtx->y[i], center_y), scale_fixed);
-            vtx->z[i] = FIXED_MUL_64(FIXED_SUB(vtx->z[i], center_z), scale_fixed);
+            vtx->x[i] = FIXED_MUL_64(FIXED_SUB(ox, center_x), scale_fixed);
+            vtx->y[i] = FIXED_MUL_64(FIXED_SUB(oy, center_y), scale_fixed);
+            vtx->z[i] = FIXED_MUL_64(FIXED_SUB(oz, center_z), scale_fixed);
         } else {
-            vtx->x[i] = FIXED_MUL_64(vtx->x[i], scale_fixed);
-            vtx->y[i] = FIXED_MUL_64(vtx->y[i], scale_fixed);
-            vtx->z[i] = FIXED_MUL_64(vtx->z[i], scale_fixed);
+            vtx->x[i] = FIXED_MUL_64(ox, scale_fixed);
+            vtx->y[i] = FIXED_MUL_64(oy, scale_fixed);
+            vtx->z[i] = FIXED_MUL_64(oz, scale_fixed);
         }
     }
 
@@ -1998,26 +2049,297 @@ void autoScaleModel(Model3D* model, float target_max_dim, float min_scale, float
     model->auto_center_y = center_y;
     model->auto_center_z = center_z;
     model->auto_scaled = 1;
+    model->auto_centered = center_flag;
 }
 
 void revertAutoScaleModel(Model3D* model) {
-    if (model == NULL || !model->auto_scaled) return;
+    if (model == NULL) return;
     VertexArrays3D* vtx = &model->vertices;
     int n = vtx->vertex_count;
-    if (n <= 0) { model->auto_scaled = 0; return; }
-    Fixed32 scale = model->auto_scale;
-    if (scale == 0) return; // avoid div by zero
+    if (n <= 0) { model->auto_scaled = 0; model->auto_centered = 0; model->auto_scale = FIXED_ONE; return; }
 
-    // Reverse: divide by scale then add center back
-    for (int i = 0; i < n; ++i) {
-        vtx->x[i] = FIXED_ADD(FIXED_DIV_64(vtx->x[i], scale), model->auto_center_x);
-        vtx->y[i] = FIXED_ADD(FIXED_DIV_64(vtx->y[i], scale), model->auto_center_y);
-        vtx->z[i] = FIXED_ADD(FIXED_DIV_64(vtx->z[i], scale), model->auto_center_z);
+    // If we have an exact backup, restore it for perfect revert
+    if (model->orig_x && model->orig_y && model->orig_z) {
+        for (int i = 0; i < n; ++i) {
+            vtx->x[i] = model->orig_x[i];
+            vtx->y[i] = model->orig_y[i];
+            vtx->z[i] = model->orig_z[i];
+        }
+        freeBackupModelCoords(model);
+    } else {
+        // Fallback: inverse the applied scale+center using stored params
+        Fixed32 scale = model->auto_scale;
+        if (scale != 0) {
+            for (int i = 0; i < n; ++i) {
+                vtx->x[i] = FIXED_ADD(FIXED_DIV_64(vtx->x[i], scale), model->auto_center_x);
+                vtx->y[i] = FIXED_ADD(FIXED_DIV_64(vtx->y[i], scale), model->auto_center_y);
+                vtx->z[i] = FIXED_ADD(FIXED_DIV_64(vtx->z[i], scale), model->auto_center_z);
+            }
+        }
     }
 
-    model->auto_scaled = 0;
-    model->auto_scale = FIXED_ONE;
+    // free radius buffer when reverting (optional but keeps memory tidy)
+    if (model->radius_buf) { free(model->radius_buf); model->radius_buf = NULL; model->radius_buf_capacity = 0; }
 }
+
+void backupModelCoords(Model3D* model) {
+    if (model == NULL) return;
+    VertexArrays3D* vtx = &model->vertices;
+    int n = vtx->vertex_count;
+    if (n <= 0) return;
+
+    // If previous backup existed, free it first
+    if (model->orig_x) { free(model->orig_x); model->orig_x = NULL; }
+    if (model->orig_y) { free(model->orig_y); model->orig_y = NULL; }
+    if (model->orig_z) { free(model->orig_z); model->orig_z = NULL; }
+
+    model->orig_x = (Fixed32*)malloc(n * sizeof(Fixed32));
+    model->orig_y = (Fixed32*)malloc(n * sizeof(Fixed32));
+    model->orig_z = (Fixed32*)malloc(n * sizeof(Fixed32));
+    if (!model->orig_x || !model->orig_y || !model->orig_z) {
+        // If allocation failed, ensure a consistent state and bail out
+        freeBackupModelCoords(model);
+        return;
+    }
+
+    for (int i = 0; i < n; ++i) {
+        model->orig_x[i] = vtx->x[i];
+        model->orig_y[i] = vtx->y[i];
+        model->orig_z[i] = vtx->z[i];
+    }
+}
+
+void freeBackupModelCoords(Model3D* model) {
+    if (model == NULL) return;
+    if (model->orig_x) { free(model->orig_x); model->orig_x = NULL; }
+    if (model->orig_y) { free(model->orig_y); model->orig_y = NULL; }
+    if (model->orig_z) { free(model->orig_z); model->orig_z = NULL; }
+    if (model->radius_buf) { free(model->radius_buf); model->radius_buf = NULL; model->radius_buf_capacity = 0; }
+}
+
+// Fit model to view using sphere-based metric with percentile trimming
+void fitModelToView(Model3D* model, ObserverParams* params, float target_max_dim, float margin, float percentile, int center_flag) {
+    if (model == NULL || params == NULL) return;
+    VertexArrays3D* vtx = &model->vertices;
+    int n = vtx->vertex_count;
+    if (n <= 0) return;
+
+    // Compute centroid using original coordinates if available
+    // Vertex sampling: sample up to max_samples vertices uniformly (no face traversal)
+    const int max_samples = 4096;
+    int step = 1;
+    int sampleCount = n;
+    float minR = 0.0f, maxR = 0.0f; // declared here for scope to be used later
+    if (n > max_samples) {
+        step = (n + max_samples - 1) / max_samples; // ceil division
+        if (step < 1) step = 1;
+        sampleCount = (n + step - 1) / step;
+    }
+
+    // Compute centroid on sampled vertices (fast, no allocations)
+    float cx = 0.0f, cy = 0.0f, cz = 0.0f;
+    int sc = 0;
+    for (int vi = 0; vi < n; vi += step) {
+        Fixed32 xi = model->orig_x ? model->orig_x[vi] : vtx->x[vi];
+        Fixed32 yi = model->orig_y ? model->orig_y[vi] : vtx->y[vi];
+        Fixed32 zi = model->orig_z ? model->orig_z[vi] : vtx->z[vi];
+        cx += FIXED_TO_FLOAT(xi);
+        cy += FIXED_TO_FLOAT(yi);
+        cz += FIXED_TO_FLOAT(zi);
+        sc++;
+    }
+
+    if (sc < 3) {
+        // Fallback: process the full dataset (rare)
+        if (model->coord_buf_capacity < n) {
+            if (model->coord_buf) free(model->coord_buf);
+            model->coord_buf = (float*)malloc((size_t)n * 3 * sizeof(float));
+            if (!model->coord_buf) { model->coord_buf_capacity = 0; return; }
+            model->coord_buf_capacity = n;
+        }
+        float *coords = model->coord_buf;
+        cx = cy = cz = 0.0f;
+        for (int i = 0; i < n; ++i) {
+            Fixed32 xi = model->orig_x ? model->orig_x[i] : vtx->x[i];
+            Fixed32 yi = model->orig_y ? model->orig_y[i] : vtx->y[i];
+            Fixed32 zi = model->orig_z ? model->orig_z[i] : vtx->z[i];
+            float xf = FIXED_TO_FLOAT(xi);
+            float yf = FIXED_TO_FLOAT(yi);
+            float zf = FIXED_TO_FLOAT(zi);
+            coords[i*3 + 0] = xf;
+            coords[i*3 + 1] = yf;
+            coords[i*3 + 2] = zf;
+            cx += xf; cy += yf; cz += zf;
+        }
+        cx /= (float)n; cy /= (float)n; cz /= (float)n;
+
+        // Ensure radius buffer capacity
+        if (model->radius_buf_capacity < n) {
+            if (model->radius_buf) free(model->radius_buf);
+            model->radius_buf = (float*)malloc((size_t)n * sizeof(float));
+            if (!model->radius_buf) { model->radius_buf_capacity = 0; return; }
+            model->radius_buf_capacity = n;
+        }
+
+        // Fill buffer with squared radii and compute min/max in one pass
+        float dx0 = coords[0*3 + 0] - cx;
+        float dy0 = coords[0*3 + 1] - cy;
+        float dz0 = coords[0*3 + 2] - cz;
+        float r20 = dx0*dx0 + dy0*dy0 + dz0*dz0;
+        model->radius_buf[0] = r20;
+        float minR = r20, maxR = r20;
+        for (int i = 1; i < n; ++i) {
+            float dx = coords[i*3 + 0] - cx;
+            float dy = coords[i*3 + 1] - cy;
+            float dz = coords[i*3 + 2] - cz;
+            float r2 = dx*dx + dy*dy + dz*dz;
+            model->radius_buf[i] = r2;
+            if (r2 < minR) minR = r2;
+            if (r2 > maxR) maxR = r2;
+        }
+        sampleCount = n; // use full dataset
+    } else {
+        // Use sampled vertices (sc samples)
+        if (model->radius_buf_capacity < sc) {
+            if (model->radius_buf) free(model->radius_buf);
+            model->radius_buf = (float*)malloc((size_t)sc * sizeof(float));
+            if (!model->radius_buf) { model->radius_buf_capacity = 0; return; }
+            model->radius_buf_capacity = sc;
+        }
+        cx /= (float)sc; cy /= (float)sc; cz /= (float)sc;
+        float minR = 0.0f, maxR = 0.0f;
+        int ii = 0;
+        for (int vi = 0; vi < n; vi += step) {
+            Fixed32 xi = model->orig_x ? model->orig_x[vi] : vtx->x[vi];
+            Fixed32 yi = model->orig_y ? model->orig_y[vi] : vtx->y[vi];
+            Fixed32 zi = model->orig_z ? model->orig_z[vi] : vtx->z[vi];
+            float dx = FIXED_TO_FLOAT(xi) - cx;
+            float dy = FIXED_TO_FLOAT(yi) - cy;
+            float dz = FIXED_TO_FLOAT(zi) - cz;
+            float r2 = dx*dx + dy*dy + dz*dz;
+            model->radius_buf[ii] = r2;
+            if (ii == 0) { minR = maxR = r2; } else { if (r2 < minR) minR = r2; if (r2 > maxR) maxR = r2; }
+            ii++;
+        }
+        sampleCount = sc;
+    }
+
+    // Select the percentile squared radius using optimized quickselect (median-of-three pivot)
+    int idx = (int)(percentile * sampleCount) - 1;
+    if (idx < 0) idx = 0; if (idx >= sampleCount) idx = sampleCount-1;
+
+    // We already computed minR/maxR during radius filling earlier (minR/maxR available)
+    if (minR == maxR) {
+        float Rf = sqrtf(model->radius_buf[idx]);
+        if (Rf <= 0.0f) return;
+        double scale_f = (double)(target_max_dim / (2.0f * Rf));
+        if (!isfinite(scale_f) || scale_f <= 0.0) return;
+        if (scale_f < 0.01) scale_f = 0.01; if (scale_f > 1000.0) scale_f = 1000.0;
+        Fixed32 scale_fixed = FLOAT_TO_FIXED((float)scale_f);
+
+        // Backup original coords and apply scale+center
+        backupModelCoords(model);
+
+        Fixed32 center_x = FLOAT_TO_FIXED((float)cx);
+        Fixed32 center_y = FLOAT_TO_FIXED((float)cy);
+        Fixed32 center_z = FLOAT_TO_FIXED((float)cz);
+
+        for (int i = 0; i < n; ++i) {
+            Fixed32 ox = model->orig_x[i];
+            Fixed32 oy = model->orig_y[i];
+            Fixed32 oz = model->orig_z[i];
+            if (center_flag) {
+                vtx->x[i] = FIXED_MUL_64(FIXED_SUB(ox, center_x), scale_fixed);
+                vtx->y[i] = FIXED_MUL_64(FIXED_SUB(oy, center_y), scale_fixed);
+                vtx->z[i] = FIXED_MUL_64(FIXED_SUB(oz, center_z), scale_fixed);
+            } else {
+                vtx->x[i] = FIXED_MUL_64(ox, scale_fixed);
+                vtx->y[i] = FIXED_MUL_64(oy, scale_fixed);
+                vtx->z[i] = FIXED_MUL_64(oz, scale_fixed);
+            }
+        }
+
+        model->auto_scale = scale_fixed;
+        model->auto_center_x = center_x;
+        model->auto_center_y = center_y;
+        model->auto_center_z = center_z;
+        model->auto_scaled = 1;
+        model->auto_centered = center_flag;
+
+        // Recompute distance to fit and apply to params
+        params->distance = computeDistanceToFit(&model->vertices, margin);
+        printf("[FIT] p%g radius=%.3f scale=%.4f applied. New distance: %.2f\n", percentile*100.0, (double)Rf, (double)scale_f, FIXED_TO_FLOAT(params->distance));
+        return;
+    }
+    // Quickselect (iterative) with median-of-three pivot selection on the sample
+    int left = 0, right = sampleCount - 1;
+    while (left < right) {
+        int mid = left + ((right - left) >> 1);
+        // median-of-three: pick median of left, mid, right
+        float a = model->radius_buf[left], b = model->radius_buf[mid], c = model->radius_buf[right];
+        float pivot = b;
+        if ((a <= b && b <= c) || (c <= b && b <= a)) pivot = b;
+        else if ((b <= a && a <= c) || (c <= a && a <= b)) pivot = a;
+        else pivot = c;
+
+        int i = left, j = right;
+        while (i <= j) {
+            while (model->radius_buf[i] < pivot) i++;
+            while (model->radius_buf[j] > pivot) j--;
+            if (i <= j) {
+                float tmp = model->radius_buf[i]; model->radius_buf[i] = model->radius_buf[j]; model->radius_buf[j] = tmp;
+                i++; j--;
+            }
+        }
+        if (idx <= j) right = j;
+        else if (idx >= i) left = i;
+        else break;
+    }
+
+    float R2f = model->radius_buf[idx];
+    float Rf = sqrtf(R2f);
+    if (Rf <= 0.0f) return;
+
+    // Compute scale from sphere metric
+    double scale_f = (double)(target_max_dim / (2.0f * Rf));
+    if (!isfinite(scale_f) || scale_f <= 0.0) return;
+    if (scale_f < 0.01) scale_f = 0.01; if (scale_f > 1000.0) scale_f = 1000.0;
+    Fixed32 scale_fixed = FLOAT_TO_FIXED((float)scale_f);
+
+    // Backup original coords and apply scale+center
+    backupModelCoords(model);
+
+    Fixed32 center_x = FLOAT_TO_FIXED((float)cx);
+    Fixed32 center_y = FLOAT_TO_FIXED((float)cy);
+    Fixed32 center_z = FLOAT_TO_FIXED((float)cz);
+
+    for (int i = 0; i < n; ++i) {
+        Fixed32 ox = model->orig_x[i];
+        Fixed32 oy = model->orig_y[i];
+        Fixed32 oz = model->orig_z[i];
+        if (center_flag) {
+            vtx->x[i] = FIXED_MUL_64(FIXED_SUB(ox, center_x), scale_fixed);
+            vtx->y[i] = FIXED_MUL_64(FIXED_SUB(oy, center_y), scale_fixed);
+            vtx->z[i] = FIXED_MUL_64(FIXED_SUB(oz, center_z), scale_fixed);
+        } else {
+            vtx->x[i] = FIXED_MUL_64(ox, scale_fixed);
+            vtx->y[i] = FIXED_MUL_64(oy, scale_fixed);
+            vtx->z[i] = FIXED_MUL_64(oz, scale_fixed);
+        }
+    }
+
+    model->auto_scale = scale_fixed;
+    model->auto_center_x = center_x;
+    model->auto_center_y = center_y;
+    model->auto_center_z = center_z;
+    model->auto_scaled = 1;
+    model->auto_centered = center_flag;
+
+    // Recompute distance to fit and apply to params
+    params->distance = computeDistanceToFit(&model->vertices, margin);
+    printf("[FIT] p%g radius=%.3f scale=%.4f applied. New distance: %.2f\n", percentile*100.0, (double)Rf, (double)scale_f, FIXED_TO_FLOAT(params->distance));
+}
+
 
 
 // Helper macro to swap face indices in the sorted_face_indices array
@@ -2044,6 +2366,11 @@ void drawPolygons(Model3D* model, int* vertex_count, int face_count, int vertex_
     int quad_count = 0;
     Pattern pat;
     
+    // Precompute screen scale and screen bounds for culling
+    int screenScale = mode / 320;
+    int screenW = screenScale * (CENTRE_X * 2);
+    int screenH = screenScale * (CENTRE_Y * 2);
+
     // Use global persistent handle to avoid repeated NewHandle/DisposeHandle
     // Each call allocates fresh if needed, but reuses same handle block
     if (globalPolyHandle == NULL) {
@@ -2068,6 +2395,9 @@ void drawPolygons(Model3D* model, int* vertex_count, int face_count, int vertex_
     SetPenMode(0);
     // printf("\nDrawing polygons on screen:\n");
 
+    // Set fill pen once per frame (reduces state changes)
+    SetSolidPenPat(14);
+
     // Use sorted_face_indices to draw in correct depth order
     // Draw ALL faces - painter's algorithm handles occlusion
     int start_face = 0;
@@ -2077,36 +2407,70 @@ void drawPolygons(Model3D* model, int* vertex_count, int face_count, int vertex_
         if (faces->display_flag[face_id] == 0) continue;
         if (faces->vertex_count[face_id] >= 3) {
             int offset = faces->vertex_indices_ptr[face_id];
+            int vcount_face = faces->vertex_count[face_id];
+            int *indices_base = &faces->vertex_indices_buffer[offset];
+
+            // Quick validity pass: ensure all indices are valid to avoid undefined points
+            int all_valid = 1;
+            for (j = 0; j < vcount_face; ++j) {
+                int vi = indices_base[j] - 1;
+                if (vi < 0 || vi >= vtx->vertex_count) { all_valid = 0; break; }
+            }
+            if (!all_valid) { invalid_faces_skipped++; continue; }
 
             // Calculate polySize for this specific face
-            int polySize = 2 + 8 + (faces->vertex_count[face_id] * 4);
+            int polySize = 2 + 8 + (vcount_face * 4);
             poly = (DynamicPolygon *)*polyHandle;
             poly->polySize = polySize;
-            min_x = max_x = min_y = max_y = -1;
-            for (j = 0; j < faces->vertex_count[face_id]; j++) {
-                int vertex_idx = faces->vertex_indices_buffer[offset + j] - 1;
-                // Only draw valid vertices
-                if (vertex_idx >= 0 && vertex_idx < vtx->vertex_count) {
-                    poly->polyPoints[j].h = mode / 320 * vtx->x2d[vertex_idx];
-                    poly->polyPoints[j].v = vtx->y2d[vertex_idx];
-                    if (min_x == -1 || vtx->x2d[vertex_idx] < min_x) min_x = vtx->x2d[vertex_idx];
-                    if (max_x == -1 || vtx->x2d[vertex_idx] > max_x) max_x = vtx->x2d[vertex_idx];
-                    if (min_y == -1 || vtx->y2d[vertex_idx] < min_y) min_y = vtx->y2d[vertex_idx];
-                    if (max_y == -1 || vtx->y2d[vertex_idx] > max_y) max_y = vtx->y2d[vertex_idx];
-                }
+
+            // Cache arrays
+            int *x2d = vtx->x2d;
+            int *y2d = vtx->y2d;
+
+            // Initialize min/max with the first vertex to avoid sentinel checks
+            int first_vi = indices_base[0] - 1;
+            int x = x2d[first_vi];
+            int y = y2d[first_vi];
+            poly->polyPoints[0].h = screenScale * x;
+            poly->polyPoints[0].v = y;
+            min_x = max_x = x;
+            min_y = max_y = y;
+
+            // Fill remaining points using cached data
+            for (j = 1; j < vcount_face; ++j) {
+                int vi = indices_base[j] - 1;
+                x = x2d[vi];
+                y = y2d[vi];
+                poly->polyPoints[j].h = screenScale * x;
+                poly->polyPoints[j].v = y;
+                if (x < min_x) min_x = x;
+                if (x > max_x) max_x = x;
+                if (y < min_y) min_y = y;
+                if (y > max_y) max_y = y;
             }
+
             poly->polyBBox.h1 = min_x;
             poly->polyBBox.v1 = min_y;
             poly->polyBBox.h2 = max_x;
             poly->polyBBox.v2 = max_y;
-            SetSolidPenPat(14);
-            GetPenPat(pat);
-            FillPoly(polyHandle, pat);
-            SetSolidPenPat(7);
-            FramePoly(polyHandle);
-            valid_faces_drawn++;
-            if (faces->vertex_count[face_id] == 3) triangle_count++;
-            else if (faces->vertex_count[face_id] == 4) quad_count++;
+
+            // Bounding-box culling (convert to screen pixels)
+            int sc_min_x = screenScale * min_x;
+            int sc_max_x = screenScale * max_x;
+            int sc_min_y = screenScale * min_y;
+            int sc_max_y = screenScale * max_y;
+            if (sc_max_x < 0 || sc_min_x >= screenW || sc_max_y < 0 || sc_min_y >= screenH) {
+                // Off-screen; skip drawing
+            } else {
+                GetPenPat(pat);
+                FillPoly(polyHandle, pat);
+                SetSolidPenPat(7);
+                FramePoly(polyHandle);
+                SetSolidPenPat(14); // restore fill pen
+                valid_faces_drawn++;
+                if (vcount_face == 3) triangle_count++;
+                else if (vcount_face == 4) quad_count++;
+            }
         } else {
             invalid_faces_skipped++;
         }
@@ -2246,9 +2610,9 @@ void DoText() {
                 printf("Vertices: %d, Faces: %d\n", model->vertices.vertex_count, model->faces.face_count);
                 printf("Observer Parameters:\n");
                 printf("    Distance: %.2f\n", FIXED_TO_FLOAT(params.distance));
-                printf("    Horizontal Angle: %d°\n", params.angle_h);
-                printf("    Vertical Angle: %d°\n", params.angle_v);
-                printf("    Screen Rotation Angle: %d°\n", params.angle_w);
+                printf("    Horizontal Angle: %d deg\n", params.angle_h);
+                printf("    Vertical Angle: %d deg\n", params.angle_v);
+                printf("    Screen Rotation Angle: %d deg\n", params.angle_w);
                 printf("===================================\n");
                 printf("\n");
                 printf("Press any key to continue...\n");
@@ -2262,6 +2626,73 @@ void DoText() {
                     printf("Auto-scale reverted.\n");
                 } else {
                     printf("No auto-scale to revert.\n");
+                }
+                goto bigloop;
+
+            case 43:  // '+' - increase auto-scale by 10%
+            case 61:  // '=' also acts as '+' on some keyboards
+                if (model != NULL && model->auto_scaled && model->orig_x) {
+                    float curr = FIXED_TO_FLOAT(model->auto_scale);
+                    float newf = curr * 1.1f;
+                    if (newf > 1000.0f) newf = 1000.0f;
+                    Fixed32 new_fixed = FLOAT_TO_FIXED(newf);
+                    VertexArrays3D* vtxp = &model->vertices;
+                    Fixed32 cx = model->auto_center_x;
+                    Fixed32 cy = model->auto_center_y;
+                    Fixed32 cz = model->auto_center_z;
+                    int nn = vtxp->vertex_count;
+                    for (int ii = 0; ii < nn; ++ii) {
+                        Fixed32 ox = model->orig_x[ii];
+                        Fixed32 oy = model->orig_y[ii];
+                        Fixed32 oz = model->orig_z[ii];
+                        if (model->auto_centered) {
+                            vtxp->x[ii] = FIXED_MUL_64(FIXED_SUB(ox, cx), new_fixed);
+                            vtxp->y[ii] = FIXED_MUL_64(FIXED_SUB(oy, cy), new_fixed);
+                            vtxp->z[ii] = FIXED_MUL_64(FIXED_SUB(oz, cz), new_fixed);
+                        } else {
+                            vtxp->x[ii] = FIXED_MUL_64(ox, new_fixed);
+                            vtxp->y[ii] = FIXED_MUL_64(oy, new_fixed);
+                            vtxp->z[ii] = FIXED_MUL_64(oz, new_fixed);
+                        }
+                    }
+                    model->auto_scale = new_fixed;
+                    params.distance = computeDistanceToFit(&model->vertices, 0.92f);
+                    printf("Auto-scale increased x1.1 -> factor %.4f. New distance: %.2f\n", newf, FIXED_TO_FLOAT(params.distance));
+                } else {
+                    printf("No auto-scale to adjust.\n");
+                }
+                goto bigloop;
+
+            case 45:  // '-' - decrease auto-scale by 10%
+                if (model != NULL && model->auto_scaled && model->orig_x) {
+                    float curr = FIXED_TO_FLOAT(model->auto_scale);
+                    float newf = curr / 1.1f;
+                    if (newf < 0.001f) newf = 0.001f;
+                    Fixed32 new_fixed = FLOAT_TO_FIXED(newf);
+                    VertexArrays3D* vtxp = &model->vertices;
+                    Fixed32 cx = model->auto_center_x;
+                    Fixed32 cy = model->auto_center_y;
+                    Fixed32 cz = model->auto_center_z;
+                    int nn = vtxp->vertex_count;
+                    for (int ii = 0; ii < nn; ++ii) {
+                        Fixed32 ox = model->orig_x[ii];
+                        Fixed32 oy = model->orig_y[ii];
+                        Fixed32 oz = model->orig_z[ii];
+                        if (model->auto_centered) {
+                            vtxp->x[ii] = FIXED_MUL_64(FIXED_SUB(ox, cx), new_fixed);
+                            vtxp->y[ii] = FIXED_MUL_64(FIXED_SUB(oy, cy), new_fixed);
+                            vtxp->z[ii] = FIXED_MUL_64(FIXED_SUB(oz, cz), new_fixed);
+                        } else {
+                            vtxp->x[ii] = FIXED_MUL_64(ox, new_fixed);
+                            vtxp->y[ii] = FIXED_MUL_64(oy, new_fixed);
+                            vtxp->z[ii] = FIXED_MUL_64(oz, new_fixed);
+                        }
+                    }
+                    model->auto_scale = new_fixed;
+                    params.distance = computeDistanceToFit(&model->vertices, 0.92f);
+                    printf("Auto-scale decreased /1.1 -> factor %.4f. New distance: %.2f\n", newf, FIXED_TO_FLOAT(params.distance));
+                } else {
+                    printf("No auto-scale to adjust.\n");
                 }
                 goto bigloop;
 
