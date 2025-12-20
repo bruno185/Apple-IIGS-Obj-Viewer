@@ -73,6 +73,7 @@ int readVertices_last_count = 0;
 // Allocated once, HLocked only during use, prevents repeated NewHandle/DisposeHandle
 static Handle globalPolyHandle = NULL;
 static int poly_handle_locked = 0;  // Track lock state
+static int framePolyOnly = 0; // Toggle: 1 = frame-only, 0 = fill+frame (default: filled polygons)
 
 // ============================================================================
 //                            FIXED POINT DEFINITIONS
@@ -1597,6 +1598,82 @@ void processModelFast(Model3D* model, ObserverParams* params, const char* filena
     }
 }
 
+// Lightweight wireframe processing: only transform & project vertices, set face visibility
+// No per-face depth calculations or sorting performed here for maximum speed in wireframe mode
+void processModelWireframe(Model3D* model, ObserverParams* params, const char* filename) {
+    int i, j;
+    Fixed32 cos_h, sin_h, cos_v, sin_v, cos_w, sin_w;
+    Fixed32 x, y, z, zo, xo, yo;
+    Fixed32 inv_zo, x2d_temp, y2d_temp;
+
+    cos_h = cos_deg_int(params->angle_h);
+    sin_h = sin_deg_int(params->angle_h);
+    cos_v = cos_deg_int(params->angle_v);
+    sin_v = sin_deg_int(params->angle_v);
+    cos_w = cos_deg_int(params->angle_w);
+    sin_w = sin_deg_int(params->angle_w);
+
+    const Fixed32 cos_h_cos_v = FIXED_MUL_64(cos_h, cos_v);
+    const Fixed32 sin_h_cos_v = FIXED_MUL_64(sin_h, cos_v);
+    const Fixed32 cos_h_sin_v = FIXED_MUL_64(cos_h, sin_v);
+    const Fixed32 sin_h_sin_v = FIXED_MUL_64(sin_h, sin_v);
+    const Fixed32 scale = INT_TO_FIXED(100);
+    const Fixed32 centre_x_f = INT_TO_FIXED(CENTRE_X);
+    const Fixed32 centre_y_f = INT_TO_FIXED(CENTRE_Y);
+    const Fixed32 distance = params->distance;
+
+    VertexArrays3D* vtx = &model->vertices;
+    Fixed32 *x_arr = vtx->x, *y_arr = vtx->y, *z_arr = vtx->z;
+    Fixed32 *xo_arr = vtx->xo, *yo_arr = vtx->yo, *zo_arr = vtx->zo;
+    int *x2d_arr = vtx->x2d, *y2d_arr = vtx->y2d;
+    int vcount = vtx->vertex_count;
+
+    // Local copies for speed
+    FaceArrays3D* faces = &model->faces;
+    int *vertex_indices_buffer = faces->vertex_indices_buffer;
+    int *vertex_indices_ptr = faces->vertex_indices_ptr;
+    int *face_vertex_count = faces->vertex_count;
+
+    for (i = 0; i < vcount; i++) {
+        x = x_arr[i];
+        y = y_arr[i];
+        z = z_arr[i];
+        Fixed32 term1 = FIXED_MUL_64(x, cos_h_cos_v);
+        Fixed32 term2 = FIXED_MUL_64(y, sin_h_cos_v);
+        Fixed32 term3 = FIXED_MUL_64(z, sin_v);
+        zo = FIXED_ADD(FIXED_SUB(FIXED_SUB(FIXED_NEG(term1), term2), term3), distance);
+        if (zo > 0) {
+            // compute projected xy directly into x2d/y2d without writing intermediate xo/yo/zo
+            Fixed32 xo_local = FIXED_ADD(FIXED_NEG(FIXED_MUL_64(x, sin_h)), FIXED_MUL_64(y, cos_h));
+            Fixed32 yo_local = FIXED_ADD(FIXED_SUB(FIXED_NEG(FIXED_MUL_64(x, cos_h_sin_v)), FIXED_MUL_64(y, sin_h_sin_v)), FIXED_MUL_64(z, cos_v));
+            inv_zo = FIXED_DIV_64(scale, zo);
+            Fixed32 tmp_x = FIXED_ADD(FIXED_MUL_64(xo_local, inv_zo), centre_x_f);
+            Fixed32 tmp_y = FIXED_SUB(centre_y_f, FIXED_MUL_64(yo_local, inv_zo));
+            // apply screen rotation and round
+            x2d_arr[i] = FIXED_ROUND_TO_INT(FIXED_ADD(FIXED_SUB(FIXED_MUL_64(cos_w, FIXED_SUB(tmp_x, centre_x_f)), FIXED_MUL_64(sin_w, FIXED_SUB(centre_y_f, tmp_y))), centre_x_f));
+            y2d_arr[i] = FIXED_ROUND_TO_INT(FIXED_SUB(centre_y_f, FIXED_ADD(FIXED_MUL_64(sin_w, FIXED_SUB(tmp_x, centre_x_f)), FIXED_MUL_64(cos_w, FIXED_SUB(centre_y_f, tmp_y)))));
+        } else {
+            // negative zo (behind camera) — mark as invalid projection
+            x2d_arr[i] = -1;
+            y2d_arr[i] = -1;
+        }
+    }
+
+    // Set simple visibility flag per face: visible if any vertex projected on-screen (x2d != -1)
+    for (i = 0; i < faces->face_count; ++i) {
+        int offset = vertex_indices_ptr[i];
+        int vcount_face = face_vertex_count[i];
+        int *indices_base = &vertex_indices_buffer[offset];
+        int visible = 0;
+        for (j = 0; j < vcount_face; ++j) {
+            int vi = indices_base[j] - 1;
+            if (vi >= 0 && vi < vcount && x2d_arr[vi] != -1) { visible = 1; break; }
+        }
+        faces->display_flag[i] = visible;
+        faces->sorted_face_indices[i] = i; // identity order; no sorting required
+    }
+}
+
 // ============================================================================
 //                    BASIC FUNCTION IMPLEMENTATIONS
 // ============================================================================
@@ -2545,11 +2622,18 @@ void drawPolygons(Model3D* model, int* vertex_count, int face_count, int vertex_
             if (sc_max_x < 0 || sc_min_x >= screenW || sc_max_y < 0 || sc_min_y >= screenH) {
                 // Off-screen; skip drawing
             } else {
-                GetPenPat(pat);
-                FillPoly(polyHandle, pat);
-                SetSolidPenPat(7);
-                FramePoly(polyHandle);
-                SetSolidPenPat(14); // restore fill pen
+                if (framePolyOnly) {
+                    // Frame-only rendering (no fill)
+                    SetSolidPenPat(7);
+                    FramePoly(polyHandle);
+                    SetSolidPenPat(14); // keep fill pen as default for next faces
+                } else {
+                    GetPenPat(pat);
+                    FillPoly(polyHandle, pat);
+                    SetSolidPenPat(7);
+                    FramePoly(polyHandle);
+                    SetSolidPenPat(14); // restore fill pen
+                }
                 valid_faces_drawn++;
                 if (vcount_face == 3) triangle_count++;
                 else if (vcount_face == 4) quad_count++;
@@ -2651,7 +2735,12 @@ void DoText() {
         // Process model with parameters - OPTIMIZED VERSION
             // Process model with parameters - OPTIMIZED VERSION
         printf("Processing model...\n");
-        processModelFast(model, &params, filename);
+        if (framePolyOnly) {
+            // Wireframe mode: only project vertices and set simple face visibility—skip face sorting
+            processModelWireframe(model, &params, filename);
+        } else {
+            processModelFast(model, &params, filename);
+        }
 
     loopReDraw:
         {
@@ -2797,6 +2886,17 @@ void DoText() {
                 colorpalette ^= 1; // Toggle between 0 and 1
                 goto loopReDraw;
 
+            case 70:  // 'F' - toggle frame-only polygon rendering
+            case 102: // 'f'
+                framePolyOnly ^= 1;
+                printf("Frame-only polygons: %s\n", framePolyOnly ? "ON" : "OFF");
+                if (!framePolyOnly && model != NULL) {
+                    // Switched back to filled polygons — re-run full processing to recompute depths & ordering
+                    printf("Switching to filled mode: reprocessing model (sorting faces)...\n");
+                    processModelFast(model, &params, filename);
+                }
+                goto loopReDraw;
+
             case 78:  // 'N' - load new model
             case 110: // 'n'
                 destroyModel3D(model);
@@ -2822,6 +2922,7 @@ void DoText() {
                 printf("Arrow Up/Down: Increase/Decrease vertical angle\n");
                 printf("W/X: Increase/Decrease screen rotation angle\n");
                 printf("C: Toggle color palette display\n");
+                printf("F: Toggle frame-only polygons (default: OFF — polygons are filled by default)\n");
                 printf("N: Load new model\n");
                 printf("H: Display this help message\n");
                 printf("ESC: Quit program\n");
