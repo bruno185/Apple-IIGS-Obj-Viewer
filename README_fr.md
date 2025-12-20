@@ -27,6 +27,7 @@ Ce projet lit des fichiers OBJ simplifiés (sommets `v` et faces `f`), effectue 
 - Flèches : ajuster les angles
 - W / X : rotation écran
 - C : changer palette
+- F : basculer l'affichage en contours de polygones (par défaut : rempli — polygones affichés remplis + contour)
 - R : annuler l'auto-scale (si appliqué)
 - K : éditer angles/distance sans recharger le modèle (ENTER peut déclencher l'auto-fit)
 

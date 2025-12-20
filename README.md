@@ -27,6 +27,7 @@ This project reads simplified OBJ files (vertices `v` and faces `f`), performs 3
 - Arrow keys: adjust angles
 - W / X: rotate screen
 - C: change palette
+- F: toggle frame-only polygons (default: OFF — polygons are filled by default)
 - R: revert auto-scale (if applied)
 - K: edit angles/distance interactively without reloading the model (ENTER may trigger auto-fit)
 
