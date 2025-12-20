@@ -2200,6 +2200,16 @@ void revertAutoScaleModel(Model3D* model) {
         }
     }
 
+    /* Ensure meta flags and scale are cleared after revert so a future auto-fit starts from
+       a clean state and does not attempt to double-revert or apply inverse scaling. */
+    model->auto_scaled = 0;
+    model->auto_centered = 0;
+    model->auto_scale = FIXED_ONE;
+
+    /* Recompute the bounding sphere from the (restored) model coordinates so that
+       distance estimations and subsequent auto-fit operations are based on current data. */
+    computeModelBoundingSphere(model);
+
     // free radius buffer when reverting (optional but keeps memory tidy)
     if (model->radius_buf) { free(model->radius_buf); model->radius_buf = NULL; model->radius_buf_capacity = 0; }
 }
