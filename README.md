@@ -36,6 +36,32 @@ This project reads simplified OBJ files (vertices `v` and faces `f`), performs 3
 - An orientation fix was added for OBJ Z-up exports (swap Y/Z at import) and can be reverted manually.
 - Auto‑fit uses a precomputed **bounding sphere** (centroid + radius) for O(1) distance estimates via `computeDistanceFromBoundingSphere()`; `computeDistanceToFit()` (per‑vertex scan) is retained but **deprecated** as a fallback.
 
+## Important functions & file:line references
+
+<!-- FUNC_LIST_START -->
+- 🔧 `void painter_newell_sancha(Model3D* model, int face_count)` — `GS3Dp.cc:654`
+- 🔧 `Model3D* createModel3D(void)` — `GS3Dp.cc:927`
+- 🔧 `void destroyModel3D(Model3D* model)` — `GS3Dp.cc:1245`
+- 🔧 `int loadModel3D(Model3D* model, const char* filename)` — `GS3Dp.cc:1306`
+- 🔧 `void computeModelBoundingSphere(Model3D* model)` — `GS3Dp.cc:563`
+- 🔧 `Fixed32 computeDistanceFromBoundingSphere(Model3D* model, float margin)` — `GS3Dp.cc:564`
+- 🔧 `void getObserverParams(ObserverParams* params, Model3D* model)` — `GS3Dp.cc:574`
+- 🔧 `void processModelFast(Model3D* model, ObserverParams* params, const char* filename)` — `GS3Dp.cc:1498`
+- 🔧 `void processModelWireframe(Model3D* model, ObserverParams* params, const char* filename)` — `GS3Dp.cc:1603`
+- 🔧 `int readVertices(const char* filename, VertexArrays3D* vtx, int max_vertices)` — `GS3Dp.cc:499`
+- 🔧 `int readFaces_model(const char* filename, Model3D* model)` — `GS3Dp.cc:1760`
+- 🔧 `void projectTo2D(VertexArrays3D* vtx, int angle_w_deg)` — `GS3Dp.cc:560`
+- 🔧 `void calculateFaceDepths(Model3D* model, Face3D* faces, int face_count)` — `GS3Dp.cc:628`
+- 🔧 `Fixed32 computeDistanceToFit(VertexArrays3D* vtx, float margin)` — `GS3Dp.cc:573`
+- 🔧 `void autoScaleModel(Model3D* model, float target_max_dim, float min_scale, float max_scale, int center_flag)` — `GS3Dp.cc:577`
+- 🔧 `void revertAutoScaleModel(Model3D* model)` — `GS3Dp.cc:578`
+- 🔧 `void backupModelCoords(Model3D* model)` — `GS3Dp.cc:588`
+- 🔧 `void freeBackupModelCoords(Model3D* model)` — `GS3Dp.cc:589`
+- 🔧 `void fitModelToView(Model3D* model, ObserverParams* params, float target_max_dim, float margin, float percentile, int center_flag)` — `GS3Dp.cc:581`
+- 🔧 `void drawPolygons(Model3D* model, int* vertex_count, int face_count, int vertex_count_total)` — `GS3Dp.cc:627`
+- 🔧 `int main()` — `GS3Dp.cc:2689`
+<!-- FUNC_LIST_END -->
+
 ## Credits
 - Main author: Bruno
 - Tribute: *A tribute to Robert DONY* — Author of "Calcul des parties cachées" (Masson, 1986)

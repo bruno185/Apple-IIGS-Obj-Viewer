@@ -243,7 +243,7 @@ static inline int normalize_deg(int deg) {
 #define ENABLE_DEBUG_SAVE 0     // 1 = Enable debug save (SLOW!), 0 = Disable
 //#define PERFORMANCE_MODE 0      // 1 = Optimized performance mode, 0 = Debug mode
 // OPTIMIZATION: Performance mode - disable printf
-#define PERFORMANCE_MODE 0      // 1 = no printf, 0 = normal printf
+#define PERFORMANCE_MODE 1      // 1 = no printf, 0 = normal printf
 
 #define MAX_LINE_LENGTH 256     // Maximum file line size
 #define MAX_VERTICES 6000       // Maximum vertices in a 3D model

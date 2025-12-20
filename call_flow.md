@@ -45,6 +45,8 @@
     - 🔧 **`calculateFaceDepths()`** — compute per-face `z_min/z_max/z_mean`, display flags, planar coefficients (Newell)
     - 🔧 **`painter_newell_sancha()`** — sort faces by depth and correct ambiguous order (qsort + corrections)
 
+    - 🔧 **`processModelWireframe(model, &params, filename)`** — lightweight wireframe processing: transforms and projects vertices and sets face visibility only (no per-face depth/sorting); used for wireframe/frame-only display to improve speed.
+
 - 🔧 **`drawPolygons(model, faces, face_count, vert_count)`** — render loop
   - uses sorted faces; for each face builds QuickDraw polygon from `vtx->x2d/y2d` (these already reflect any model-space auto-scaling applied by `fitModelToView`)
   - Fill + Frame polygon (QuickDraw)
@@ -66,6 +68,8 @@
 - 🔧 **`computeDistanceFromBoundingSphere(model, margin)`** — O(1) camera distance estimate using the bounding sphere
 - 🔧 **`autoScaleModel()` / `revertAutoScaleModel()`** — non-destructive scaling helpers (backup + apply + revert)
 - 🔧 **`backupModelCoords()` / `freeBackupModelCoords()`** — support for non-destructive transforms
+- 🔧 **`processModelWireframe(model, &params, filename)`** — lightweight wireframe processing (transform & project only) used for fast wireframe/frame-only rendering
+- 🔧 **`destroyModel3D(Model3D* model)`** — frees all memory allocated by `createModel3D()`; must be called to avoid leaks
 - 🔧 **`readVertices()` / `readFaces_model()`** — file parsing helpers
 
 **Notes:** `adjustDistanceFast()` (earlier fast-adjust prototype) was removed — use `+`/`-` behavior and `computeDistanceFromBoundingSphere()` for distance adjustments.
@@ -81,16 +85,27 @@
 
 ## Function signatures & file:line references
 
-- 🔧 `int main()` — `GS3Dp.cc:2637`
-- 🔧 `Model3D* createModel3D(void)` — `GS3Dp.cc:939`
-- 🔧 `int loadModel3D(Model3D* model, const char* filename)` — `GS3Dp.cc:1318`
-- 🔧 `void computeModelBoundingSphere(Model3D* model)` — `GS3Dp.cc:1351`
-- 🔧 `Fixed32 computeDistanceFromBoundingSphere(Model3D* model, float margin)` — `GS3Dp.cc:1379`
-- 🔧 `void getObserverParams(ObserverParams* params, Model3D* model)` — `GS3Dp.cc:1414`
-- 🔧 `void fitModelToView(Model3D* model, ObserverParams* params, float target_max_dim, float margin, float percentile, int center_flag)` — `GS3Dp.cc:2198`
-- 🔧 `void processModelFast(Model3D* model, ObserverParams* params, const char* filename)` — `GS3Dp.cc:1511`
-- 🔧 `void drawPolygons(Model3D* model, int* vertex_count, int face_count, int vertex_count_total)` — `GS3Dp.cc:2471`
-- 🔧 `Fixed32 computeDistanceToFit(VertexArrays3D* vtx, float margin)` — `GS3Dp.cc:2017`
+- 🔧 `void painter_newell_sancha(Model3D* model, int face_count)` — `GS3Dp.cc:654`
+- 🔧 `Model3D* createModel3D(void)` — `GS3Dp.cc:927`
+- 🔧 `void destroyModel3D(Model3D* model)` — `GS3Dp.cc:1245`
+- 🔧 `int loadModel3D(Model3D* model, const char* filename)` — `GS3Dp.cc:1306`
+- 🔧 `void computeModelBoundingSphere(Model3D* model)` — `GS3Dp.cc:1339`
+- 🔧 `Fixed32 computeDistanceFromBoundingSphere(Model3D* model, float margin)` — `GS3Dp.cc:1367`
+- 🔧 `void getObserverParams(ObserverParams* params, Model3D* model)` — `GS3Dp.cc:1402`
+- 🔧 `void processModelFast(Model3D* model, ObserverParams* params, const char* filename)` — `GS3Dp.cc:1498`
+- 🔧 `void processModelWireframe(Model3D* model, ObserverParams* params, const char* filename)` — `GS3Dp.cc:1603`
+- 🔧 `int readVertices(const char* filename, VertexArrays3D* vtx, int max_vertices)` — `GS3Dp.cc:1706`
+- 🔧 `int readFaces_model(const char* filename, Model3D* model)` — `GS3Dp.cc:1760`
+- 🔧 `void projectTo2D(VertexArrays3D* vtx, int angle_w_deg)` — `GS3Dp.cc:1875`
+- 🔧 `void calculateFaceDepths(Model3D* model, Face3D* faces, int face_count)` — `GS3Dp.cc:1940`
+- 🔧 `Fixed32 computeDistanceToFit(VertexArrays3D* vtx, float margin)` — `GS3Dp.cc:2062`
+- 🔧 `void autoScaleModel(Model3D* model, float target_max_dim, float min_scale, float max_scale, int center_flag)` — `GS3Dp.cc:2112`
+- 🔧 `void revertAutoScaleModel(Model3D* model)` — `GS3Dp.cc:2177`
+- 🔧 `void backupModelCoords(Model3D* model)` — `GS3Dp.cc:2207`
+- 🔧 `void freeBackupModelCoords(Model3D* model)` — `GS3Dp.cc:2234`
+- 🔧 `void fitModelToView(Model3D* model, ObserverParams* params, float target_max_dim, float margin, float percentile, int center_flag)` — `GS3Dp.cc:2243`
+- 🔧 `void drawPolygons(Model3D* model, int* vertex_count, int face_count, int vertex_count_total)` — `GS3Dp.cc:2516`
+- 🔧 `int main()` — `GS3Dp.cc:2689`
 
 ---
 
