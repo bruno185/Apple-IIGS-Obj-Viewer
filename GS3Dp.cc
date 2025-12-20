@@ -723,22 +723,24 @@ void painter_newell_sancha(Model3D* model, int face_count) {
             }
 
             // Test 1 : Depth overlap
-
             // Depth quick test: if farthest point of P2 is in front of nearest point of P1, order is respected
-            if (faces->z_max[f2] >= faces->z_min[f1]) continue;
+            if (faces->z_max[f2] <= faces->z_min[f1]) continue;
             
             // Bounding Box 2D overlap (split into X and Y parts)
             // Use cached bounding boxes (computed in calculateFaceDepths)
+
+            // Test 2 : X overlap only
             int minx1 = faces->minx[f1], maxx1 = faces->maxx[f1], miny1 = faces->miny[f1], maxy1 = faces->maxy[f1];
             int minx2 = faces->minx[f2], maxx2 = faces->maxx[f2], miny2 = faces->miny[f2], maxy2 = faces->maxy[f2];
-        
-            // Test 2 : X overlap only
-
-            if (maxx1 < minx2 || maxx2 < minx1) continue;
+            if (ENABLE_DEBUG_SAVE) {
+                printf("Test2 X: face%d minx1=%d maxx1=%d | face%d minx2=%d maxx2=%d\n", f1, minx1, maxx1, f2, minx2, maxx2);
+                printf("Test2 Y: face%d miny1=%d maxy1=%d | face%d miny2=%d maxy2=%d\n", f1, miny1, maxy1, f2, miny2, maxy2);
+                keypress();
+            }
+            if (maxx1 <= minx2 || maxx2 <= minx1) continue;
             
             // Test 3 : Y overlap only
-
-            if (maxy1 < miny2 || maxy2 < miny1) continue;
+            if (maxy1 <= miny2 || maxy2 <= miny1) continue;
 
             // Use cached plane normals and d terms computed in calculateFaceDepths
             int n1 = faces->vertex_count[f1];
@@ -754,7 +756,7 @@ void painter_newell_sancha(Model3D* model, int face_count) {
             Fixed32 b2 = faces->plane_b[f2];
             Fixed32 c2 = faces->plane_c[f2];
             Fixed32 d2 = faces->plane_d[f2];
-            Fixed32 epsilon = FLOAT_TO_FIXED(0.01);
+            Fixed32 epsilon = FLOAT_TO_FIXED(0.000001f);
 
             int obs_side1 = 0; // côté de l'observateur par rapport au plan de f1 : +1, -1 ou 0 (inconclusive)
             int obs_side2 = 0; // côté de l'observateur par rapport au plan de f2 : +1, -1 ou 0 (inconclusive)
@@ -763,12 +765,12 @@ void painter_newell_sancha(Model3D* model, int face_count) {
             int all_opposite_side; // flag pour indiquer si tous les vertex sont du coté opposé
             Fixed32 test_value;
 
-
-            // Newell/Sancha plane tests
-
             // Test 4 : Test si f2 est du même côté que l'observatur par rapport au plan de f1. 
-
             // Si oui, f2 est bien devant f1, pas d'échange.
+            if (ENABLE_DEBUG_SAVE) {
+            printf("Test 4 : Testing faces %d and %d\n", f1, f2);
+            }
+            //keypress();
             obs_side1 = 0; // sign of d1: +1, -1 or 0 (inconclusive)
             if (d1 > epsilon) obs_side1 = 1; 
             else if (d1 < -epsilon) obs_side1 = -1;
@@ -790,9 +792,12 @@ void painter_newell_sancha(Model3D* model, int face_count) {
 
             skipT4:
 
-            // Test 5 : Test si f1 est du coté opposé de l'observateur par rapport au plan de f2. 
-
+            // Test 5 : Test si f1 est du coté opposé de l'observateur par rapport au plan de f2.      
             // Si oui, f1 est devant f2, pas d'échange
+
+            if (ENABLE_DEBUG_SAVE) {
+            printf("Test 5 : Testing faces %d and %d\n", f1, f2);
+          }
             obs_side2 = 0; // sign of d1: +1, -1 or 0 (inconclusive)
             if (d2 > epsilon) obs_side2 = 1; 
             else if (d2 < -epsilon) obs_side2 = -1;
@@ -814,8 +819,11 @@ void painter_newell_sancha(Model3D* model, int face_count) {
             skipT5:
 
             // Test 6 : Test si f2 est du  côté opposé de l'observateur par rapport au plan de f1. 
-
             // Si oui, f2 est derrière f1, on doit échanger l'ordre
+                
+            if (ENABLE_DEBUG_SAVE) {
+            printf("Test 6 : Testing faces %d and %d\n", f1, f2);
+                }
             obs_side1 = 0; // sign of d1: +1, -1 or 0 (inconclusive)
             if (d1 > epsilon) obs_side1 = 1; 
             else if (d1 < -epsilon) obs_side1 = -1;
@@ -844,8 +852,11 @@ void painter_newell_sancha(Model3D* model, int face_count) {
             skipT6: ;
 
             // Test 7 : Test si f1 est du même côté de l'observateur par rapport au plan de f2. 
-
             // Si oui, f1 est devant f2, on doit échanger l'ordre
+
+            if (ENABLE_DEBUG_SAVE) {
+            printf("Test 7 : Testing faces %d and %d\n", f1, f2);
+                }
             obs_side2 = 0; // sign of d1: +1, -1 or 0 (inconclusive)
             if (d2 > epsilon) obs_side2 = 1; 
             else if (d2 < -epsilon) obs_side2 = -1;
@@ -861,7 +872,7 @@ void painter_newell_sancha(Model3D* model, int face_count) {
                     break; 
                     }
             }
-                if (all_same_side == 0) continue;
+                if (all_same_side == 0) goto skipT7;
                 // f1 n'est pas du même côté de l'observateur, donc f1 n'est pas devant f2
                 // on ne doit pas échanger l'ordre des faces
                 else {
@@ -869,6 +880,11 @@ void painter_newell_sancha(Model3D* model, int face_count) {
                 }
 
             do_swap: {
+
+                if (ENABLE_DEBUG_SAVE) {
+                printf("Swapping faces %d and %d\n", f1, f2);
+                keypress();
+                }
 
                 int tmp = faces->sorted_face_indices[i];
                 faces->sorted_face_indices[i] = faces->sorted_face_indices[i+1];
@@ -887,12 +903,27 @@ void painter_newell_sancha(Model3D* model, int face_count) {
             }
 
         skipT7: ;
+        if (ENABLE_DEBUG_SAVE){
+                printf("NON CONCLUTANT POUR LES FACES %d ET %d\n", f1, f2);
+        }
+        // on les met dans la liste des paires ordonnées pour ne plus les tester
+        if (ordered_pairs != NULL && ordered_pairs_count < ordered_pairs_capacity) {
+                ordered_pairs[ordered_pairs_count].face1 = f2;
+                ordered_pairs[ordered_pairs_count].face2 = f1;
+                ordered_pairs_count++;
+        }
+        // keypress();
         // Ici, on devrait découper f1 par f2 (ou inversement), mais on ne le fait pas pour l'instant
         }
-            } while (swapped);
+        if (1) {printf("Pass completed, swaps this pass: %d\n", swap_count);
+                keypress(); 
+        if (swapped) {
+                printf("sawaped = %d\n", swapped);
+                keypress(); 
+                }
+        }       
+    } while (swapped);
     
-
-
     // Libérer la mémoire de la liste des paires ordonnées
     if (ordered_pairs) {
         free(ordered_pairs);
@@ -1643,7 +1674,7 @@ void processModelWireframe(Model3D* model, ObserverParams* params, const char* f
         Fixed32 term3 = FIXED_MUL_64(z, sin_v);
         zo = FIXED_ADD(FIXED_SUB(FIXED_SUB(FIXED_NEG(term1), term2), term3), distance);
         if (zo > 0) {
-            // compute projected xy directly into x2d/y2d without writing intermediate xo/yo/zo
+            // compute projected xy directly into x2d/y2d and store intermediate observer coords for depth tests
             Fixed32 xo_local = FIXED_ADD(FIXED_NEG(FIXED_MUL_64(x, sin_h)), FIXED_MUL_64(y, cos_h));
             Fixed32 yo_local = FIXED_ADD(FIXED_SUB(FIXED_NEG(FIXED_MUL_64(x, cos_h_sin_v)), FIXED_MUL_64(y, sin_h_sin_v)), FIXED_MUL_64(z, cos_v));
             inv_zo = FIXED_DIV_64(scale, zo);
@@ -1652,8 +1683,15 @@ void processModelWireframe(Model3D* model, ObserverParams* params, const char* f
             // apply screen rotation and round
             x2d_arr[i] = FIXED_ROUND_TO_INT(FIXED_ADD(FIXED_SUB(FIXED_MUL_64(cos_w, FIXED_SUB(tmp_x, centre_x_f)), FIXED_MUL_64(sin_w, FIXED_SUB(centre_y_f, tmp_y))), centre_x_f));
             y2d_arr[i] = FIXED_ROUND_TO_INT(FIXED_SUB(centre_y_f, FIXED_ADD(FIXED_MUL_64(sin_w, FIXED_SUB(tmp_x, centre_x_f)), FIXED_MUL_64(cos_w, FIXED_SUB(centre_y_f, tmp_y)))));
+            // Store observer-space coordinates so subsequent face tests see valid values
+            zo_arr[i] = zo;
+            xo_arr[i] = xo_local;
+            yo_arr[i] = yo_local;
         } else {
-            // negative zo (behind camera) — mark as invalid projection
+            // negative zo (behind camera) — mark as invalid projection and store zo<=0
+            zo_arr[i] = zo;
+            xo_arr[i] = 0;
+            yo_arr[i] = 0;
             x2d_arr[i] = -1;
             y2d_arr[i] = -1;
         }
@@ -2011,6 +2049,21 @@ void calculateFaceDepths(Model3D* model, Face3D* faces, int face_count) {
             face_arrays->plane_b[i] = 0;
             face_arrays->plane_c[i] = 0;
             face_arrays->plane_d[i] = 0;
+        }
+
+        // Diagnostic: report suspiciously negative z_max values to help debug
+        if (!PERFORMANCE_MODE) {
+            float zmax_f = FIXED_TO_FLOAT(z_max);
+            if (zmax_f < -100.0f) {
+                printf("[DEBUG] Face %d: z_min=%.2f z_max=%.2f display_flag=%d n=%d\n", i, FIXED_TO_FLOAT(z_min), zmax_f, display_flag, n);
+                // Print per-vertex observer-space zo values
+                printf("[DEBUG]  vertex zo: ");
+                for (int jj = 0; jj < n; ++jj) {
+                    int vidx = face_arrays->vertex_indices_buffer[offset + jj] - 1;
+                    if (vidx >= 0) printf("(%d: %.2f) ", vidx, FIXED_TO_FLOAT(vtx->zo[vidx]));
+                }
+                printf("\n");
+            }
         }
 
         face_arrays->z_min[i] = z_min;  // Store minimum depth for this face (closest)
@@ -2759,6 +2812,7 @@ void DoText() {
         // Get observer parameters
         getObserverParams(&params, model);
 
+
     bigloop:
         // Process model with parameters - OPTIMIZED VERSION
             // Process model with parameters - OPTIMIZED VERSION
@@ -2769,6 +2823,7 @@ void DoText() {
         } else {
             processModelFast(model, &params, filename);
         }
+
 
     loopReDraw:
         {
