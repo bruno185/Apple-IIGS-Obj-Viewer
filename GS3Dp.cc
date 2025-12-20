@@ -242,7 +242,7 @@ static inline int normalize_deg(int deg) {
 #define ENABLE_DEBUG_SAVE 0     // 1 = Enable debug save (SLOW!), 0 = Disable
 //#define PERFORMANCE_MODE 0      // 1 = Optimized performance mode, 0 = Debug mode
 // OPTIMIZATION: Performance mode - disable printf
-#define PERFORMANCE_MODE 1      // 1 = no printf, 0 = normal printf
+#define PERFORMANCE_MODE 0      // 1 = no printf, 0 = normal printf
 
 #define MAX_LINE_LENGTH 256     // Maximum file line size
 #define MAX_VERTICES 6000       // Maximum vertices in a 3D model
@@ -578,6 +578,10 @@ void revertAutoScaleModel(Model3D* model);
 
 // Fit model to view using sphere metric with percentile trimming (non-destructive)
 void fitModelToView(Model3D* model, ObserverParams* params, float target_max_dim, float margin, float percentile, int center_flag);
+
+// Fast distance adjust: try to approximate change in distance by scaling 2D coords and updating depths/plane_d.
+// Returns 1 if applied safely, 0 if caller should fall back to full recompute.
+
 
 // Internal helpers: backup/restore original vertex arrays
 void backupModelCoords(Model3D* model);
@@ -1957,6 +1961,10 @@ void calculateFaceDepths(Model3D* model, Face3D* faces, int face_count) {
 }
 
 
+
+
+
+
 // DEPRECATED: computeDistanceToFit
 // ---------------------------------
 // This vertex-based function computed an observer distance by scanning all
@@ -2601,6 +2609,7 @@ void DoText() {
         char input[50];
         int colorpalette = 0; // default color palette
 
+
     newmodel:
         printf("===================================\n");
         printf("       3D OBJ file viewer\n");
@@ -2640,6 +2649,7 @@ void DoText() {
 
     bigloop:
         // Process model with parameters - OPTIMIZED VERSION
+            // Process model with parameters - OPTIMIZED VERSION
         printf("Processing model...\n");
         processModelFast(model, &params, filename);
 

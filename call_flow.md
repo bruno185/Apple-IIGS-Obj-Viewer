@@ -38,10 +38,10 @@
 ## Main render loop
 
 - Enter main render loop (`bigloop`):
-  - 🔧 **`processModelFast(model, &params, filename)`** — ultra-fast transformation + projection
+  - 🔧 **`processModelFast(model, &params, filename)`** — runs every frame; ultra-fast transformation + projection
     - precompute trig products (Fixed32)
     - For each vertex (tight Fixed32 loop): transform → compute `xo/yo/zo` → project to `x2d/y2d`
-    - **Note:** runtime auto-fit is *not* applied here — 🔧 **`fitModelToView()`** modifies model coordinates and updates bounding sphere; `processModelFast` works on the (possibly scaled) model vertices.
+    - **Note:** runtime auto-fit is *not* applied inside `processModelFast` — any autoscale is applied ahead of time by 🔧 **`fitModelToView()`**, which modifies model coordinates and updates the bounding sphere; `processModelFast` operates on those (possibly scaled) model vertices.
     - 🔧 **`calculateFaceDepths()`** — compute per-face `z_min/z_max/z_mean`, display flags, planar coefficients (Newell)
     - 🔧 **`painter_newell_sancha()`** — sort faces by depth and correct ambiguous order (qsort + corrections)
 
@@ -52,8 +52,9 @@
 ### UI / Input handling
 
 - `startgraph()` / render / `endgraph()` / `DoText()` / optional `DoColor()`
-- Keys: Space (info), N (new model), Arrows / A Z (angles/distance), `r` (revert autoscale), `+`/`-` (adjust autoscale)
-- `+`/`-` update `model->auto_scale` and **update the bounding sphere proportionally** (O(1)), then recompute `params->distance` using `computeDistanceFromBoundingSphere()` (fast)
+- Keys: Space (info), N (new model), Arrows / A Z (angles/distance), `r` (revert autoscale), `K` (edit angles/distance without reloading model), `+`/`-` (adjust autoscale)
+- `K` invokes `getObserverParams(&params, model)` interactively and applies new angles/distance without requiring a reload.
+- `+`/`-` behavior: if the model is not yet auto-scaled, these keys first perform an **auto-fit** (`fitModelToView()`); they then increase or decrease the current `params->distance`, update `model->auto_scale` and **scale the bounding sphere proportionally** (O(1)), and recompute `params->distance` using `computeDistanceFromBoundingSphere()` (fast). The action prints a short message (e.g., "Distance increased" / "Distance decreased").
 
 ---
 
@@ -66,6 +67,8 @@
 - 🔧 **`autoScaleModel()` / `revertAutoScaleModel()`** — non-destructive scaling helpers (backup + apply + revert)
 - 🔧 **`backupModelCoords()` / `freeBackupModelCoords()`** — support for non-destructive transforms
 - 🔧 **`readVertices()` / `readFaces_model()`** — file parsing helpers
+
+**Notes:** `adjustDistanceFast()` (earlier fast-adjust prototype) was removed — use `+`/`-` behavior and `computeDistanceFromBoundingSphere()` for distance adjustments.
 
 ---
 

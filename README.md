@@ -21,17 +21,19 @@ This project reads simplified OBJ files (vertices `v` and faces `f`), performs 3
 2. Run the generated executable. The program will ask for an OBJ filename and optionally apply auto-scale.
 
 3. Keyboard controls:
-- Space: show parameters and redraw
-- A / Z: decrease/increase distance
+- Space: show parameters and redraw (shows whether auto-scale is ON and its factor)
+- A / Z: decrease/increase distance (10% steps)
+- +/-: apply auto-fit if none present then increase/decrease distance (10% steps)
 - Arrow keys: adjust angles
 - W / X: rotate screen
 - C: change palette
 - R: revert auto-scale (if applied)
+- K: edit angles/distance interactively without reloading the model (ENTER may trigger auto-fit)
 
 ## Implementation notes
 - Critical computations are optimized to reduce floating conversions and avoid overflow (heavy use of `Fixed32` and `Fixed64`).
 - An orientation fix was added for OBJ Z-up exports (swap Y/Z at import) and can be reverted manually.
-- `computeDistanceToFit` was optimized to use Fixed32 min/max then a single conversion.
+- Auto‑fit uses a precomputed **bounding sphere** (centroid + radius) for O(1) distance estimates via `computeDistanceFromBoundingSphere()`; `computeDistanceToFit()` (per‑vertex scan) is retained but **deprecated** as a fallback.
 
 ## Credits
 - Main author: Bruno

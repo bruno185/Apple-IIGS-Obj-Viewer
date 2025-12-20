@@ -21,17 +21,19 @@ Ce projet lit des fichiers OBJ simplifiés (sommets `v` et faces `f`), effectue 
 2. Lancer l'exécutable généré. Le programme demandera le fichier OBJ à charger et proposera d'appliquer l'auto-scale.
 
 3. Commandes clavier:
-- Space : afficher les paramètres et redessiner
-- A / Z : diminuer/augmenter la distance
+- Space : afficher les paramètres et redessiner (affiche si Auto-scale est ON et son facteur)
+- A / Z : diminuer/augmenter la distance (pas de 10 %)
+- +/- : appliquer l'auto-fit si aucun auto-scale, puis augmenter/diminuer la distance (pas de 10 %)
 - Flèches : ajuster les angles
 - W / X : rotation écran
 - C : changer palette
 - R : annuler l'auto-scale (si appliqué)
+- K : éditer angles/distance sans recharger le modèle (ENTER peut déclencher l'auto-fit)
 
 ## Remarques sur l'implémentation
 - Les calculs critiques sont optimisés pour limiter les conversions flottantes et éviter les débordements (usage intensif de `Fixed32` et `Fixed64`).
 - Un correctif d'orientation pour les exports OBJ Z-up a été ajouté (swap Y/Z à l'import) et peut être réverti manuellement.
-- `computeDistanceToFit` a été optimisé pour utiliser des min/max en `Fixed32` puis une conversion unique.
+- L'auto‑fit utilise désormais une **sphère englobante** précomputée (centroïde + rayon) pour estimer la distance en **O(1)** via `computeDistanceFromBoundingSphere()` ; `computeDistanceToFit()` (scan par sommet) est conservée mais **dépréciée** en tant que solution de secours.
 
 ## Crédits
 - Auteur principal: Bruno
