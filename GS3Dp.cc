@@ -676,10 +676,9 @@ void painter_newell_sancha(Model3D* model, int face_count) {
     }
     
     // 3. Correction stricte d'ordre avec les deux tests de plan (Newell/Sancha)
-    // Utilise une tolérance epsilon pour éviter les oscillations dues aux erreurs d'arrondi
-    // Liste des couples de faces ordonnées par les tests de plan pour éviter les oscillations
-    int swapped;
+    
     int swap_count = 0;
+    int swapped = 0; // flag utilisé par la boucle de correction
 
 
     // Structure pour stocker les paires de faces ordonnées
@@ -700,7 +699,13 @@ void painter_newell_sancha(Model3D* model, int face_count) {
         }
     }
     int ordered_pairs_count = 0;
-    
+
+    // Oscillation / runaway protection
+    int pass_number = 0;
+    const int max_passes = 2000; // safety cap to avoid infinite loops
+    unsigned int last_checksum = 0;
+    unsigned int prev_checksum = 0;
+
     do {
         swapped = 0;
 
@@ -732,11 +737,7 @@ void painter_newell_sancha(Model3D* model, int face_count) {
             // Test 2 : X overlap only
             int minx1 = faces->minx[f1], maxx1 = faces->maxx[f1], miny1 = faces->miny[f1], maxy1 = faces->maxy[f1];
             int minx2 = faces->minx[f2], maxx2 = faces->maxx[f2], miny2 = faces->miny[f2], maxy2 = faces->maxy[f2];
-            if (ENABLE_DEBUG_SAVE) {
-                printf("Test2 X: face%d minx1=%d maxx1=%d | face%d minx2=%d maxx2=%d\n", f1, minx1, maxx1, f2, minx2, maxx2);
-                printf("Test2 Y: face%d miny1=%d maxy1=%d | face%d miny2=%d maxy2=%d\n", f1, miny1, maxy1, f2, miny2, maxy2);
-                keypress();
-            }
+
             if (maxx1 <= minx2 || maxx2 <= minx1) continue;
             
             // Test 3 : Y overlap only
@@ -883,7 +884,7 @@ void painter_newell_sancha(Model3D* model, int face_count) {
 
                 if (ENABLE_DEBUG_SAVE) {
                 printf("Swapping faces %d and %d\n", f1, f2);
-                keypress();
+                // removed blocking keypress() to avoid hangs in GS runtime
                 }
 
                 int tmp = faces->sorted_face_indices[i];
@@ -915,13 +916,38 @@ void painter_newell_sancha(Model3D* model, int face_count) {
         // keypress();
         // Ici, on devrait découper f1 par f2 (ou inversement), mais on ne le fait pas pour l'instant
         }
-        if (1) {printf("Pass completed, swaps this pass: %d\n", swap_count);
-                keypress(); 
+        if (ENABLE_DEBUG_SAVE) {printf("Pass completed, swaps this pass: %d\n", swap_count);
+                // removed blocking keypress();
         if (swapped) {
-                printf("sawaped = %d\n", swapped);
-                keypress(); 
+                printf("swapped = %d\n", swapped);
+                keypress();
                 }
-        }       
+        }
+
+        // Compute checksum of current ordering to detect stabilization or 2-state oscillation
+        {
+            unsigned int checksum = 2166136261u; // FNV-1a init
+            for (i = 0; i < face_count; i++) {
+                checksum ^= (unsigned int)faces->sorted_face_indices[i];
+                checksum *= 16777619u;
+            }
+            pass_number++;
+            if (checksum == last_checksum) {
+                printf("Painter ordering stabilized after %d passes (checksum=%u)\n", pass_number, checksum);
+                break;
+            }
+            if (pass_number > 1 && checksum == prev_checksum) {
+                printf("Painter detected 2-state oscillation at pass %d (checksum=%u vs prev=%u). Aborting correction.\n", pass_number, checksum, prev_checksum);
+                break;
+            }
+            if (pass_number >= max_passes) {
+                printf("Painter reached max_passes (%d). Aborting correction.\n", max_passes);
+                break;
+            }
+            prev_checksum = last_checksum;
+            last_checksum = checksum;
+        }
+
     } while (swapped);
     
     // Libérer la mémoire de la liste des paires ordonnées
