@@ -242,7 +242,7 @@ static inline int normalize_deg(int deg) {
 #define ENABLE_DEBUG_SAVE 0     // 1 = Enable debug save (SLOW!), 0 = Disable
 //#define PERFORMANCE_MODE 0      // 1 = Optimized performance mode, 0 = Debug mode
 // OPTIMIZATION: Performance mode - disable printf
-#define PERFORMANCE_MODE 1      // 1 = no printf, 0 = normal printf
+#define PERFORMANCE_MODE 0      // 1 = no printf, 0 = normal printf
 
 #define MAX_LINE_LENGTH 256     // Maximum file line size
 #define MAX_VERTICES 6000       // Maximum vertices in a 3D model
@@ -456,6 +456,13 @@ typedef struct {
     int radius_buf_capacity;        // capacity of radius_buf
     float *coord_buf;               // scratch buffer for converted float coordinates (x,y,z interleaved)
     int coord_buf_capacity;         // capacity in number of vertices for coord_buf
+
+    /* Bounding sphere (computed once at load) */
+    float bs_cx;   // center x (float)
+    float bs_cy;   // center y
+    float bs_cz;   // center z
+    float bs_r;    // radius
+    int bs_valid;  // 0 = not computed, 1 = valid
 } Model3D;
 
 // ============================================================================
@@ -516,33 +523,16 @@ int readVertices(const char* filename, VertexArrays3D* vtx, int max_vertices);
  */
 
 /**
- * transformToObserver
+ * projectTo2D
  * 
  * DESCRIPTION:
- *   Applies 3D geometric transformations to go from the model's
- *   coordinate system to the observer's coordinate system.
- *   
- *   APPLIED TRANSFORMATIONS:
- *   1. Horizontal rotation (angle_h) around Y-axis
- *   2. Vertical rotation (angle_v) around X-axis
- *   3. Translation by observation distance
+ *   Projects the transformed 3D coordinates onto a 2D screen using
+ *   perspective projection. Also applies a final rotation
+ *   in the 2D plane.
  * 
  * PARAMETERS:
- *   vertices     : Array of vertices to transform
+ *   vertices     : Array of vertices to project
  *   vertex_count : Number of vertices in the array
- *   angle_h      : Horizontal rotation angle (degrees)
- *   angle_v      : Vertical rotation angle (degrees)
- *   distance     : Observation distance (Z translation)
- * 
- * MATHEMATICAL FORMULAS:
- *   zo = -x*(cos_h*cos_v) - y*(sin_h*cos_v) - z*sin_v + distance
- *   xo = -x*sin_h + y*cos_h
- *   yo = -x*(cos_h*sin_v) - y*(sin_h*sin_v) + z*cos_v
- * 
- * RESULTING COORDINATES:
- *   The xo, yo, zo fields of the vertices are updated.
- */
-void transformToObserver(VertexArrays3D* vtx, int angle_h_deg, int angle_v_deg, Fixed32 distance);
 
 /**
  * projectTo2D
@@ -567,6 +557,18 @@ void transformToObserver(VertexArrays3D* vtx, int angle_h_deg, int angle_v_deg, 
  *   The x2d, y2d fields of the vertices contain the final screen coordinates.
  */
 void projectTo2D(VertexArrays3D* vtx, int angle_w_deg);
+
+/* Bounding sphere helpers */
+void computeModelBoundingSphere(Model3D* model);
+Fixed32 computeDistanceFromBoundingSphere(Model3D* model, float margin);
+
+/* DEPRECATED: computeDistanceToFit - vertex-based O(n) distance fit.
+ * Historically used to compute observer distance by scanning all vertices.
+ * Replaced by:
+ *   - computeModelBoundingSphere() (computed once at model load)
+ *   - computeDistanceFromBoundingSphere() (fast O(1) estimate based on sphere)
+ * Kept here as a fallback and for historical reference; consider removal after validation.
+ */
 Fixed32 computeDistanceToFit(VertexArrays3D* vtx, float margin);
 void getObserverParams(ObserverParams* params, Model3D* model);
 
@@ -940,6 +942,11 @@ Model3D* createModel3D(void) {
     model->radius_buf_capacity = 0;
     model->coord_buf = NULL;
     model->coord_buf_capacity = 0;
+    model->bs_cx = 0.0f;
+    model->bs_cy = 0.0f;
+    model->bs_cz = 0.0f;
+    model->bs_r = 0.0f;
+    model->bs_valid = 0;
     
     // Step 2: Allocate vertex arrays using malloc (handles bank crossing better)
     // Note: malloc() should handle bank boundaries better than NewHandle()
@@ -1318,7 +1325,52 @@ int loadModel3D(Model3D* model, const char* filename) {
         model->faces.face_count = fcount;
     }
     
+    // After loading vertices, compute bounding sphere for fast auto-fit
+    computeModelBoundingSphere(model);
     return 0;  // Success: model loaded (with or without faces)
+}
+
+// Compute bounding sphere (centroid + max radius) - O(n) once at load
+void computeModelBoundingSphere(Model3D* model) {
+    if (!model) return;
+    VertexArrays3D* vtx = &model->vertices;
+    int n = vtx->vertex_count;
+    if (n <= 0) { model->bs_valid = 0; return; }
+    double cx = 0.0, cy = 0.0, cz = 0.0;
+    for (int i = 0; i < n; ++i) {
+        cx += FIXED_TO_FLOAT(vtx->x[i]);
+        cy += FIXED_TO_FLOAT(vtx->y[i]);
+        cz += FIXED_TO_FLOAT(vtx->z[i]);
+    }
+    cx /= (double)n; cy /= (double)n; cz /= (double)n;
+    double max_r2 = 0.0;
+    for (int i = 0; i < n; ++i) {
+        double dx = FIXED_TO_FLOAT(vtx->x[i]) - cx;
+        double dy = FIXED_TO_FLOAT(vtx->y[i]) - cy;
+        double dz = FIXED_TO_FLOAT(vtx->z[i]) - cz;
+        double r2 = dx*dx + dy*dy + dz*dz;
+        if (r2 > max_r2) max_r2 = r2;
+    }
+    model->bs_cx = (float)cx;
+    model->bs_cy = (float)cy;
+    model->bs_cz = (float)cz;
+    model->bs_r = (float)sqrt(max_r2);
+    model->bs_valid = 1;
+}
+
+// Compute distance estimate directly from bounding sphere (cheap, O(1))
+Fixed32 computeDistanceFromBoundingSphere(Model3D* model, float margin) {
+    if (!model || !model->bs_valid) return FLOAT_TO_FIXED(30.0f);
+    float r = model->bs_r;
+    const float scale = 100.0f;
+    float screenHalfX = (float)CENTRE_X * margin;
+    float screenHalfY = (float)CENTRE_Y * margin;
+    float minScreenHalf = fminf(screenHalfX, screenHalfY);
+    float d_proj = (minScreenHalf > 0.0f) ? (r * scale) / minScreenHalf : 1.0f;
+    float d = d_proj + r + 1.0f;
+    d *= 1.05f;
+    if (!isfinite(d) || d < 1.0f) d = 1.0f;
+    return FLOAT_TO_FIXED(d);
 }
 
 // ============================================================================
@@ -1407,10 +1459,7 @@ void getObserverParams(ObserverParams* params, Model3D* model) {
             if (model != NULL) {
                 float default_target = 200.0f;
                 fitModelToView(model, params, default_target, 0.92f, 0.99f, 1);
-                // fitModelToView sets params->distance on success; use fallback if needed
-                if (params->distance == 0) {
-                    params->distance = computeDistanceToFit(&model->vertices, 0.92f);
-                }
+
                 printf("Auto-fit/sphere applied (factor %.4f). Press 'r' to revert or +/- to adjust.\n", FIXED_TO_FLOAT(model->auto_scale));
             } else {
                 params->distance = FLOAT_TO_FIXED(30.0);
@@ -1424,7 +1473,6 @@ void getObserverParams(ObserverParams* params, Model3D* model) {
         if (model != NULL) {
             float default_target = 200.0f;
             fitModelToView(model, params, default_target, 0.92f, 0.99f, 1);
-            if (params->distance == 0) params->distance = computeDistanceToFit(&model->vertices, 0.92f);
             printf("Auto-fit/sphere applied (factor %.4f). Press 'r' to revert or +/- to adjust.\n", FIXED_TO_FLOAT(model->auto_scale));
         } else {
             params->distance = FLOAT_TO_FIXED(30.0);        // Default distance: balanced view (Fixed Point)
@@ -1463,20 +1511,23 @@ void processModelFast(Model3D* model, ObserverParams* params, const char* filena
     const Fixed32 sin_h_cos_v = FIXED_MUL_64(sin_h, cos_v);
     const Fixed32 cos_h_sin_v = FIXED_MUL_64(cos_h, sin_v);
     const Fixed32 sin_h_sin_v = FIXED_MUL_64(sin_h, sin_v);
-    const Fixed32 scale = FLOAT_TO_FIXED(100.0);
-    const Fixed32 centre_x_f = FLOAT_TO_FIXED((float)CENTRE_X);
-    const Fixed32 centre_y_f = FLOAT_TO_FIXED((float)CENTRE_Y);
+    const Fixed32 scale = INT_TO_FIXED(100); // avoid float conversion
+    const Fixed32 centre_x_f = INT_TO_FIXED(CENTRE_X);
+    const Fixed32 centre_y_f = INT_TO_FIXED(CENTRE_Y);
     const Fixed32 distance = params->distance;
-    
-    // Performance measurement (timing removed)
     
     // 100% Fixed32 loop - ZERO conversions, maximum speed!
     VertexArrays3D* vtx = &model->vertices;
-    
-    for (i = 0; i < vtx->vertex_count; i++) {
-        x = vtx->x[i];
-        y = vtx->y[i];
-        z = vtx->z[i];
+    Fixed32 *x_arr = vtx->x, *y_arr = vtx->y, *z_arr = vtx->z;
+    Fixed32 *xo_arr = vtx->xo, *yo_arr = vtx->yo, *zo_arr = vtx->zo;
+    int *x2d_arr = vtx->x2d, *y2d_arr = vtx->y2d;
+    int vcount = vtx->vertex_count;
+
+    long t_loop_start = GetTick();
+    for (i = 0; i < vcount; i++) {
+        x = x_arr[i];
+        y = y_arr[i];
+        z = z_arr[i];
         // 3D transformation in pure Fixed32 (64-bit multiply)
         Fixed32 term1 = FIXED_MUL_64(x, cos_h_cos_v);
         Fixed32 term2 = FIXED_MUL_64(y, sin_h_cos_v);
@@ -1485,21 +1536,27 @@ void processModelFast(Model3D* model, ObserverParams* params, const char* filena
         if (zo > 0) {
             xo = FIXED_ADD(FIXED_NEG(FIXED_MUL_64(x, sin_h)), FIXED_MUL_64(y, cos_h));
             yo = FIXED_ADD(FIXED_SUB(FIXED_NEG(FIXED_MUL_64(x, cos_h_sin_v)), FIXED_MUL_64(y, sin_h_sin_v)), FIXED_MUL_64(z, cos_v));
-            vtx->zo[i] = zo;
-            vtx->xo[i] = xo;
-            vtx->yo[i] = yo;
+            zo_arr[i] = zo;
+            xo_arr[i] = xo;
+            yo_arr[i] = yo;
             inv_zo = FIXED_DIV_64(scale, zo);
             x2d_temp = FIXED_ADD(FIXED_MUL_64(xo, inv_zo), centre_x_f);
             y2d_temp = FIXED_SUB(centre_y_f, FIXED_MUL_64(yo, inv_zo));
-            vtx->x2d[i] = FIXED_ROUND_TO_INT(FIXED_ADD(FIXED_SUB(FIXED_MUL_64(cos_w, FIXED_SUB(x2d_temp, centre_x_f)), FIXED_MUL_64(sin_w, FIXED_SUB(centre_y_f, y2d_temp))), centre_x_f));
-            vtx->y2d[i] = FIXED_ROUND_TO_INT(FIXED_SUB(centre_y_f, FIXED_ADD(FIXED_MUL_64(sin_w, FIXED_SUB(x2d_temp, centre_x_f)), FIXED_MUL_64(cos_w, FIXED_SUB(centre_y_f, y2d_temp)))));
+            x2d_arr[i] = FIXED_ROUND_TO_INT(FIXED_ADD(FIXED_SUB(FIXED_MUL_64(cos_w, FIXED_SUB(x2d_temp, centre_x_f)), FIXED_MUL_64(sin_w, FIXED_SUB(centre_y_f, y2d_temp))), centre_x_f));
+            y2d_arr[i] = FIXED_ROUND_TO_INT(FIXED_SUB(centre_y_f, FIXED_ADD(FIXED_MUL_64(sin_w, FIXED_SUB(x2d_temp, centre_x_f)), FIXED_MUL_64(cos_w, FIXED_SUB(centre_y_f, y2d_temp)))));
         } else {
-            vtx->zo[i] = zo;
-            vtx->xo[i] = 0;
-            vtx->yo[i] = 0;
-            vtx->x2d[i] = -1;
-            vtx->y2d[i] = -1;
+            zo_arr[i] = zo;
+            xo_arr[i] = 0;
+            yo_arr[i] = 0;
+            x2d_arr[i] = -1;
+            y2d_arr[i] = -1;
         }
+    }
+    long t_loop_end = GetTick();
+    if (!PERFORMANCE_MODE) {
+        long elapsed_loop = t_loop_end - t_loop_start;
+        double ms_loop = ((double)elapsed_loop * 1000.0) / 60.0; // 60 ticks per second
+        printf("[TIMING] transform+project loop: %ld ticks (%.2f ms)\n", elapsed_loop, ms_loop);
     }
     
 
@@ -1733,43 +1790,6 @@ int readFaces_model(const char* filename, Model3D* model) {
     printf("\nReading faces finished : %d faces read.\n", face_count);
     return face_count;
 }
-void transformToObserver(VertexArrays3D* vtx, int angle_h_deg, int angle_v_deg, Fixed32 distance) {
-    int i;
-    Fixed32 cos_h, sin_h, cos_v, sin_v;
-    Fixed32 x, y, z;
-    cos_h = cos_deg_int(angle_h_deg);
-    sin_h = sin_deg_int(angle_h_deg);
-    cos_v = cos_deg_int(angle_v_deg);
-    sin_v = sin_deg_int(angle_v_deg);
-    Fixed32 cos_h_cos_v = FIXED_MUL_64(cos_h, cos_v);
-    Fixed32 sin_h_cos_v = FIXED_MUL_64(sin_h, cos_v);
-    Fixed32 cos_h_sin_v = FIXED_MUL_64(cos_h, sin_v);
-    Fixed32 sin_h_sin_v = FIXED_MUL_64(sin_h, sin_v);
-
-    for (i = 0; i < vtx->vertex_count; i++) {
-        x = vtx->x[i];
-        y = vtx->y[i];  // FIX: initialize y before use
-        z = vtx->z[i];
-        vtx->xo[i] = FIXED_ADD(
-            FIXED_MUL_64(x, cos_h_cos_v),
-            FIXED_MUL_64(y, sin_h_cos_v)
-        );
-        vtx->yo[i] = FIXED_ADD(
-            FIXED_SUB(
-                FIXED_MUL_64(-x, cos_h_sin_v),
-                FIXED_MUL_64(y, sin_h_sin_v)
-            ),
-            FIXED_MUL_64(z, cos_v)
-        );
-        vtx->zo[i] = FIXED_ADD(
-            FIXED_ADD(
-                FIXED_MUL_64(-x, sin_h),
-                FIXED_MUL_64(-y, cos_h)
-            ),
-            distance
-        );
-    }
-}
 
 // Function to project 3D coordinates onto 2D screen - FIXED POINT VERSION
 void projectTo2D(VertexArrays3D* vtx, int angle_w_deg) {
@@ -1870,7 +1890,13 @@ void calculateFaceDepths(Model3D* model, Face3D* faces, int face_count) {
         }
         // Compute plane normal + d term for this face using Newell's method
         Fixed32 a = 0, b = 0, c = 0, d = 0;
-        if (n > 0) {
+        if (!display_flag) {
+            // Face fully behind camera — skip expensive normal computation
+            face_arrays->plane_a[i] = 0;
+            face_arrays->plane_b[i] = 0;
+            face_arrays->plane_c[i] = 0;
+            face_arrays->plane_d[i] = 0;
+        } else if (n > 0) {
             for (j = 0; j < n; j++) {
                 int idx1 = face_arrays->vertex_indices_buffer[offset + j] - 1;
                 int idx2 = face_arrays->vertex_indices_buffer[offset + ((j+1)%n)] - 1;
@@ -1931,6 +1957,18 @@ void calculateFaceDepths(Model3D* model, Face3D* faces, int face_count) {
     }
 }
 
+
+// DEPRECATED: computeDistanceToFit
+// ---------------------------------
+// This vertex-based function computed an observer distance by scanning all
+// vertices (O(n)). It was originally used to auto-fit the model into view.
+//
+// It has been superseded by the bounding-sphere approach:
+//  - computeModelBoundingSphere() computes a centroid+radius once at model load
+//  - computeDistanceFromBoundingSphere() estimates distance in O(1) from that sphere
+//
+// The function is retained here as a fallback and for historical/diagnostic
+// purposes. Prefer the bounding-sphere helpers for production paths.
 
 // Compute an observation distance (Fixed32) that fits the model within the view.
 // Uses the model bounding box and projection scale to estimate a conservative distance
@@ -2266,8 +2304,27 @@ void fitModelToView(Model3D* model, ObserverParams* params, float target_max_dim
         model->auto_scaled = 1;
         model->auto_centered = center_flag;
 
-        // Recompute distance to fit and apply to params
-        params->distance = computeDistanceToFit(&model->vertices, margin);
+        // Update bounding sphere parameters according to applied scaling and set distance from sphere (fast, O(1))
+        {
+            float scale_f32 = FIXED_TO_FLOAT(scale_fixed);
+            if (model->bs_valid) {
+                if (center_flag) {
+                    model->bs_cx = (model->bs_cx - FIXED_TO_FLOAT(center_x)) * scale_f32;
+                    model->bs_cy = (model->bs_cy - FIXED_TO_FLOAT(center_y)) * scale_f32;
+                    model->bs_cz = (model->bs_cz - FIXED_TO_FLOAT(center_z)) * scale_f32;
+                } else {
+                    model->bs_cx = model->bs_cx * scale_f32;
+                    model->bs_cy = model->bs_cy * scale_f32;
+                    model->bs_cz = model->bs_cz * scale_f32;
+                }
+                model->bs_r *= scale_f32;
+                model->bs_valid = 1;
+                params->distance = computeDistanceFromBoundingSphere(model, margin);
+            } else {
+                // fallback (rare): compute from vertices (slower)
+                params->distance = computeDistanceToFit(&model->vertices, margin);
+            }
+        }
         printf("[FIT] p%g radius=%.3f scale=%.4f applied. New distance: %.2f\n", percentile*100.0, (double)Rf, (double)scale_f, FIXED_TO_FLOAT(params->distance));
         return;
     }
@@ -2335,8 +2392,27 @@ void fitModelToView(Model3D* model, ObserverParams* params, float target_max_dim
     model->auto_scaled = 1;
     model->auto_centered = center_flag;
 
-    // Recompute distance to fit and apply to params
-    params->distance = computeDistanceToFit(&model->vertices, margin);
+    // Update bounding sphere parameters according to applied scaling and set distance from sphere (fast, O(1))
+    {
+        float scale_f32 = FIXED_TO_FLOAT(scale_fixed);
+        if (model->bs_valid) {
+            if (center_flag) {
+                model->bs_cx = (model->bs_cx - FIXED_TO_FLOAT(center_x)) * scale_f32;
+                model->bs_cy = (model->bs_cy - FIXED_TO_FLOAT(center_y)) * scale_f32;
+                model->bs_cz = (model->bs_cz - FIXED_TO_FLOAT(center_z)) * scale_f32;
+            } else {
+                model->bs_cx = model->bs_cx * scale_f32;
+                model->bs_cy = model->bs_cy * scale_f32;
+                model->bs_cz = model->bs_cz * scale_f32;
+            }
+            model->bs_r *= scale_f32;
+            model->bs_valid = 1;
+            params->distance = computeDistanceFromBoundingSphere(model, margin);
+        } else {
+            // fallback (rare): compute from vertices (slower)
+            params->distance = computeDistanceToFit(&model->vertices, margin);
+        }
+    }
     printf("[FIT] p%g radius=%.3f scale=%.4f applied. New distance: %.2f\n", percentile*100.0, (double)Rf, (double)scale_f, FIXED_TO_FLOAT(params->distance));
 }
 
@@ -2513,6 +2589,12 @@ void DoText() {
         shroff();
         putchar((char) 12); // Clear screen    
 }
+
+
+// ==============================================================
+// THIS IS THE MAIN PROGRAM
+// ==============================================================
+//
     int main() {
         Model3D* model;
         ObserverParams params;
@@ -2656,7 +2738,18 @@ void DoText() {
                         }
                     }
                     model->auto_scale = new_fixed;
-                    params.distance = computeDistanceToFit(&model->vertices, 0.92f);
+                    {
+                        float ratio = newf / curr;
+                        if (model->bs_valid) {
+                            model->bs_cx *= ratio;
+                            model->bs_cy *= ratio;
+                            model->bs_cz *= ratio;
+                            model->bs_r *= ratio;
+                            params.distance = computeDistanceFromBoundingSphere(model, 0.92f);
+                        } else {
+                            params.distance = computeDistanceToFit(&model->vertices, 0.92f);
+                        }
+                    }
                     printf("Auto-scale increased x1.1 -> factor %.4f. New distance: %.2f\n", newf, FIXED_TO_FLOAT(params.distance));
                 } else {
                     printf("No auto-scale to adjust.\n");
@@ -2689,7 +2782,18 @@ void DoText() {
                         }
                     }
                     model->auto_scale = new_fixed;
-                    params.distance = computeDistanceToFit(&model->vertices, 0.92f);
+                    {
+                        float ratio = newf / curr;
+                        if (model->bs_valid) {
+                            model->bs_cx *= ratio;
+                            model->bs_cy *= ratio;
+                            model->bs_cz *= ratio;
+                            model->bs_r *= ratio;
+                            params.distance = computeDistanceFromBoundingSphere(model, 0.92f);
+                        } else {
+                            params.distance = computeDistanceToFit(&model->vertices, 0.92f);
+                        }
+                    }
                     printf("Auto-scale decreased /1.1 -> factor %.4f. New distance: %.2f\n", newf, FIXED_TO_FLOAT(params.distance));
                 } else {
                     printf("No auto-scale to adjust.\n");
