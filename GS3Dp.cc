@@ -1712,9 +1712,8 @@ int readVertices(const char* filename, VertexArrays3D* vtx, int max_vertices) {
     // Open file in read mode
     file = fopen(filename, "r");
     if (file == NULL) {
-        printf("[DEBUG] readVertices: fopen failed\n");
         printf("Error: Unable to open file '%s'\n", filename);
-        printf("Check that the file exists and you have read permissions.\n");
+        printf("Check that the file exists.\n\n");
         return -1;  // Return -1 on error
     }
     
@@ -1722,9 +1721,7 @@ int readVertices(const char* filename, VertexArrays3D* vtx, int max_vertices) {
     
     // Read file line by line
     while (fgets(line, sizeof(line), file) != NULL) {
-        // printf("%3d: %s", line_number, line);
         if (line[0] == 'v' && line[1] == ' ') {
-            //printf("[DEBUG] readVertices: found vertex line %d\n", line_number);
             if (vertex_count < max_vertices) {
                 float x, y, z;  // Temporary reading in float
                 if (sscanf(line + 2, "%f %f %f", &x, &y, &z) == 3) {
@@ -2708,8 +2705,8 @@ void DoText() {
         printf("===================================\n");
         printf("       3D OBJ file viewer\n");
         printf("===================================\n\n");
-        printf(" A tribute to Robert DONY\n");
-        printf(" Author of \"Calcul des parties cachees\" (Masson, 1986)\n\n");
+        printf("A tribute to Robert DONY\n");
+        printf("Author of \"Calcul des parties cachees\" (Masson, 1986)\n\n");
 
         // Creer le modele 3D
         model = createModel3D();
@@ -2720,22 +2717,43 @@ void DoText() {
             return 1;
         }
 
-        // Ask for filename
-        printf("Enter the filename to read: ");
-        if (fgets(filename, sizeof(filename), stdin) != NULL) {
-            size_t len = strlen(filename);
-            if (len > 0 && filename[len-1] == '\n') {
-                filename[len-1] = '\0';
+        // Ask for filename (loop until a non-empty filename is entered and the model loads)
+        while (1) {
+            printf("Enter the filename to read (ENTER to exit): ");
+            if (fgets(filename, sizeof(filename), stdin) != NULL) {
+                size_t len = strlen(filename);
+                if (len > 0 && filename[len-1] == '\n') {
+                    filename[len-1] = '\0';
+                }
+            } else {
+                // EOF or input error - exit gracefully
+                printf("\nInput error or EOF. Exiting.\n");
+                destroyModel3D(model);
+                return 1;
             }
-        }
 
-        // Charger le modele 3D
-        if (loadModel3D(model, filename) < 0) {
-            printf("\nError loading file\n");
-            printf("Press any key to quit...\n");
-            keypress();
-            destroyModel3D(model);
-            return 1;
+            if (filename[0] == '\0') {
+                printf("No filename entered. Exiting.\n");
+                destroyModel3D(model);
+                return 0; // Exit program when user presses ENTER with empty filename
+            }
+
+            // Try to load the model; if it fails, inform the user, reset model state, and re-prompt
+            if (loadModel3D(model, filename) < 0) {
+                // printf("\nError loading file '%s'. Please try again.\n", filename);
+                // Destroy and recreate model to ensure clean state for next attempt
+                destroyModel3D(model);
+                model = createModel3D();
+                if (model == NULL) {
+                    printf("Error: Unable to allocate memory for 3D model after failed load. Exiting.\n");
+                    printf("Press any key to quit...\n");
+                    keypress();
+                    return 1;
+                }
+                continue;
+            }
+            // Successfully loaded
+            break;
         }
 
         // Get observer parameters
