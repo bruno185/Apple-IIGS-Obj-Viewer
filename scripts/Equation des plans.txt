@@ -1,0 +1,14 @@
+
+
+Efface complètement le code qui calcule les équation des plans dans réécris le.
+Il faut utiliser uniquement les 3 premiers vextex de chaque face pour calculer a b c d en utilisant les formules suivantes :
+
+  a := y1 * (z2 - z3) + y2 * (z3 - z1) + y3 * (z1 - z2);
+  b := -x1 * (z2 - z3) + x2 * (z1 - z3) - x3 * (z1 - z2);
+  c := x1 * (y2 - y3) - x2 * (y1 - y3) + x3 * (y1 - y2);
+  d := -x1 * (y2 * z3 - y3 * z2) + x2 * (y1 * z3 - y3 * z1) - x3 * (y1 * z2 - y2 * z1);
+ 
+Nb : on travaille dans l'espace Observateur.
+Ne normalise pas.
+Si un vextex a une coordonées Z < 0 (=> derrière la caméra) alors il faut mettre le display_flag pour la face concernée.
+
