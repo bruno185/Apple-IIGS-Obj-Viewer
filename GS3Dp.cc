@@ -74,6 +74,7 @@ int readVertices_last_count = 0;
 static Handle globalPolyHandle = NULL;
 static int poly_handle_locked = 0;  // Track lock state
 static int framePolyOnly = 0; // Toggle: 1 = frame-only, 0 = fill+frame (default: filled polygons)
+static int painterFastMode = 1; // Toggle: 1 = fast painter (tests 1-3 only) (default: ON)
 
 // ============================================================================
 //                            FIXED POINT DEFINITIONS
@@ -240,7 +241,7 @@ static inline int normalize_deg(int deg) {
 // ============================================================================
 
 // Performance and debug configuration
-#define ENABLE_DEBUG_SAVE 1     // 1 = Enable debug save (SLOW!), 0 = Disable
+#define ENABLE_DEBUG_SAVE 0     // 1 = Enable debug save (SLOW!), 0 = Disable
 //#define PERFORMANCE_MODE 0      // 1 = Optimized performance mode, 0 = Debug mode
 // OPTIMIZATION: Performance mode - disable printf
 #define PERFORMANCE_MODE 1      // 1 = no printf, 0 = normal printf
@@ -626,7 +627,6 @@ void freeBackupModelCoords(Model3D* model);
  */
 void drawPolygons(Model3D* model, int* vertex_count, int face_count, int vertex_count_total);
 void calculateFaceDepths(Model3D* model, Face3D* faces, int face_count);
-void write_equ_csv(Model3D* model);
 
 
 /**
@@ -643,13 +643,62 @@ static FaceArrays3D* qsort_faces_ptr_for_cmp = NULL;
 static int cmp_faces_by_zmean(const void* pa, const void* pb) {
     int a = *(const int*)pa;
     int b = *(const int*)pb;
-    Fixed32 za = qsort_faces_ptr_for_cmp->z_min[a];
-    Fixed32 zb = qsort_faces_ptr_for_cmp->z_min[b];
+    Fixed32 za = qsort_faces_ptr_for_cmp->z_mean[a];
+    Fixed32 zb = qsort_faces_ptr_for_cmp->z_mean[b];
     if (za > zb) return -1;   // larger z_mean first (descending)
     if (za < zb) return 1;
     if (a < b) return -1;     // tie-breaker: smaller index first
     if (a > b) return 1;
     return 0;
+}
+
+/**
+ * FAST VERSION: Only performs Test 1 (depth overlap), Test 2 (X bbox), Test 3 (Y bbox)
+ * No plane coefficients, no pair caching. Much faster but less robust.
+ */
+void painter_newell_sancha_fast(Model3D* model, int face_count) {
+    FaceArrays3D* faces = &model->faces;
+    if (!faces->z_mean) return; // safety
+
+    // Initial stable sort by z_mean (descending) with tie-breaker on index
+    qsort_faces_ptr_for_cmp = faces;
+    qsort(faces->sorted_face_indices, face_count, sizeof(int), cmp_faces_by_zmean);
+    qsort_faces_ptr_for_cmp = NULL;
+
+    int swapped;
+    int pass = 0;
+    const int max_passes = face_count * 2; // safety cap
+    do {
+        swapped = 0;
+        int i;
+        for (i = 0; i < face_count - 1; i++) {
+            int f1 = faces->sorted_face_indices[i];
+            int f2 = faces->sorted_face_indices[i+1];
+
+            // Test 1: Depth overlap
+            if (faces->z_max[f2] <= faces->z_min[f1]) continue;
+            if (faces->z_max[f1] < faces->z_min[f2]) {
+                // Swap needed
+                faces->sorted_face_indices[i] = f2;
+                faces->sorted_face_indices[i+1] = f1;
+                swapped = 1;
+                continue;
+            }
+
+            // Test 2: X overlap
+            int minx1 = faces->minx[f1], maxx1 = faces->maxx[f1];
+            int minx2 = faces->minx[f2], maxx2 = faces->maxx[f2];
+            if (maxx1 <= minx2 || maxx2 <= minx1) continue;
+
+            // Test 3: Y overlap
+            int miny1 = faces->miny[f1], maxy1 = faces->maxy[f1];
+            int miny2 = faces->miny[f2], maxy2 = faces->maxy[f2];
+            if (maxy1 <= miny2 || maxy2 <= miny1) continue;
+
+
+        }
+        pass++;
+    } while (swapped && pass < max_passes);
 }
 
 void painter_newell_sancha(Model3D* model, int face_count) {
@@ -660,8 +709,6 @@ void painter_newell_sancha(Model3D* model, int face_count) {
     Fixed32* face_zmean = faces->z_mean;
     if (!face_zmean) return; // sécurité
 
-    // Export des coefficients de plan en CSV (au début de la routine)
-    write_equ_csv(model);
 
     long t_start = GetTick();
     // Etape 1 : Tri Z décroissant STABLE sur la moyenne, avec tie-breaker sur l'indice d'origine
@@ -682,7 +729,6 @@ void painter_newell_sancha(Model3D* model, int face_count) {
     
     int swap_count = 0;
     int swapped = 0; // flag utilisé par la boucle de correction
-    int undetermined = 0; // nombre de paires non déterminées
 
 
     // Structure pour stocker les paires de faces ordonnées
@@ -704,66 +750,21 @@ void painter_newell_sancha(Model3D* model, int face_count) {
     }
     int ordered_pairs_count = 0;
 
-    // Global diagnostics counters (across passes)
-    long long t_calls[8] = {0};        // 1..7 used
-    long long t_success[8] = {0};
-    long long t_inconclusive[8] = {0};
-    int shared_vertex_total = 0;
-    int degenerate_plane_total = 0;
-    int tie_break_shared_total = 0; // counter for tie-breaks applied to shared vertex pairs
-
-    // Small delta to allow near-equal Z intervals to be considered separated
-    const Fixed32 TEST1_DELTA = FLOAT_TO_FIXED(0.5f);
-
-    FILE* paint_diag = NULL;
-    FILE* undet_log = NULL;
-    int undet_log_count = 0;
-    if (ENABLE_DEBUG_SAVE) {
-        paint_diag = fopen("paintdiag.log", "a");
-        undet_log = fopen("undet.log", "a");
-        if (paint_diag) {
-            fprintf(paint_diag, "\n---- New painter run diagnostics ----\n");
-            fprintf(paint_diag, "TEST1_DELTA = %.6f\n", FIXED_TO_FLOAT(TEST1_DELTA));
-            fflush(paint_diag);
-        }
-        if (undet_log) {
-            fprintf(undet_log, "\n---- Undetermined pairs dump ----\n");
-            fflush(undet_log);
-        }
-    }
-
     // Oscillation / runaway protection
     int pass_number = 0;
     const int max_passes = 2000; // safety cap to avoid infinite loops
     unsigned int last_checksum = 0;
     unsigned int prev_checksum = 0;
 
-    // Swap history to detect repeated swaps for the same pair (to lock them)
-    typedef struct {
-        int a;
-        int b;
-        int count; // number of times this pair has been swapped
-        int locked; // if locked we will no longer swap
-    } SwapHist;
-    int swap_hist_capacity = face_count * 2;
-    SwapHist* swap_hist = NULL;
-    int swap_hist_count = 0;
-    if (swap_hist_capacity > 0) {
-        swap_hist = (SwapHist*)malloc(swap_hist_capacity * sizeof(SwapHist));
-        if (!swap_hist) swap_hist_capacity = 0;
-    }
-    int tie_break_locked_total = 0; // how many pairs were locked due to repeated swaps
-
-
     do {
         swapped = 0;
-        int t1= 0; // per-pass debug counters for tests
-        int t2= 0;
-        int t3= 0;
-        int t4= 0;
-        int t5= 0;
-        int t6= 0;
-        int t7= 0;
+        int t1 = 0;
+        int t2 = 0;
+        int t3 = 0;
+        int t4 = 0;
+        int t5 = 0;
+        int t6 = 0;
+        int t7 = 0;
 
         for (i = 0; i < face_count-1; i++) {
             int f1 = faces->sorted_face_indices[i];
@@ -783,98 +784,25 @@ void painter_newell_sancha(Model3D* model, int face_count) {
                 continue;
             }
 
-            // Test 1 : Depth overlap
             t1++;
-            t_calls[1]++;
-            // Debug: print z_min/z_max for faces involved in Test 1
-            if (ENABLE_DEBUG_SAVE) {
-                // If Test1 fails (intervals overlap), dump detailed Z per-vertex to a file for offline analysis
-                if (faces->z_max[f2] > faces->z_min[f1]) {
-                    // record failure details in zvalues.log (already used)
-                    FILE* zf = fopen("zvalues.log", "a");
-                    if (zf) {
-                        int n1, n2, off1, off2, jj, vid;
-                        n1 = faces->vertex_count[f1];
-                        n2 = faces->vertex_count[f2];
-                        off1 = faces->vertex_indices_ptr[f1];
-                        off2 = faces->vertex_indices_ptr[f2];
-
-                        fprintf(zf, "Test1Fail f1=%d zmin1=%.6f zmax1=%.6f f2=%d zmin2=%.6f zmax2=%.6f\n",
-                                f1, FIXED_TO_FLOAT(faces->z_min[f1]), FIXED_TO_FLOAT(faces->z_max[f1]),
-                                f2, FIXED_TO_FLOAT(faces->z_min[f2]), FIXED_TO_FLOAT(faces->z_max[f2]));
-                        fprintf(zf, " f1_zo:");
-                        for (jj = 0; jj < n1; ++jj) {
-                            vid = faces->vertex_indices_buffer[off1 + jj] - 1;
-                            if (vid >= 0) fprintf(zf, " %.6f", FIXED_TO_FLOAT(vtx->zo[vid]));
-                            else fprintf(zf, " NA");
-                        }
-                        fprintf(zf, "\n f2_zo:");
-                        for (jj = 0; jj < n2; ++jj) {
-                            vid = faces->vertex_indices_buffer[off2 + jj] - 1;
-                            if (vid >= 0) fprintf(zf, " %.6f", FIXED_TO_FLOAT(vtx->zo[vid]));
-                            else fprintf(zf, " NA");
-                        }
-                        // Also detect shared vertices and append indices
-                        fprintf(zf, "\n shared_idx:");
-                        for (jj = 0; jj < n1; ++jj) {
-                            int a = faces->vertex_indices_buffer[off1 + jj];
-                            for (int kk = 0; kk < n2; ++kk) {
-                                int b = faces->vertex_indices_buffer[off2 + kk];
-                                if (a == b) fprintf(zf, " %d", a);
-                            }
-                        }
-                        fprintf(zf, "\n----\n");
-                        fclose(zf);
-                    }
-                }
-            }
-            // Depth quick test with delta: allow tiny separation (faster resolution of near-equal intervals)
-            if (faces->z_max[f2] <= FIXED_SUB(faces->z_min[f1], TEST1_DELTA)) {
-                t_success[1]++;
-                if (paint_diag) fprintf(paint_diag, "Test1 success at pair (%d,%d) by z_max2 <= z_min1 - delta\n", f1, f2);
-                continue;
-            }
-
-            if (faces->z_max[f1] <= FIXED_SUB(faces->z_min[f2], TEST1_DELTA)) {
-                t_success[1]++;
-                if (paint_diag) fprintf(paint_diag, "Test1 success at pair (%d,%d) by z_max1 <= z_min2 - delta (swap)\n", f1, f2);
-                goto do_swap; }
-            // otherwise Test1 failed to decide
-            t_inconclusive[1]++;            // Check for shared vertices
-            {
-                int n1 = faces->vertex_count[f1];
-                int n2 = faces->vertex_count[f2];
-                int off1 = faces->vertex_indices_ptr[f1];
-                int off2 = faces->vertex_indices_ptr[f2];
-                int shared = 0;
-                int jj, kk;
-                for (jj = 0; jj < n1 && !shared; ++jj) {
-                    int a = faces->vertex_indices_buffer[off1 + jj];
-                    for (kk = 0; kk < n2; ++kk) {
-                        int b = faces->vertex_indices_buffer[off2 + kk];
-                        if (a == b) { shared = 1; break; }
-                    }
-                }
-                if (shared) {
-                    shared_vertex_total++;
-                    if (paint_diag) fprintf(paint_diag, "Test1 fail pair (%d,%d) shares vertices\n", f1, f2);
-                } else {
-                    if (paint_diag) fprintf(paint_diag, "Test1 fail pair (%d,%d) no shared vertices\n", f1, f2);
-                }
-            }
+            // Test 1 : Depth overlap
+            // Depth quick test: if farthest point of P2 is in front of nearest point of P1, order is respected
+            if (faces->z_max[f2] <= faces->z_min[f1]) continue;
+            if (faces->z_max[f1] <= faces->z_min[f2]) goto do_swap;
+            
             // Bounding Box 2D overlap (split into X and Y parts)
             // Use cached bounding boxes (computed in calculateFaceDepths)
+
             t2++;
-            t_calls[2]++;
             // Test 2 : X overlap only
             int minx1 = faces->minx[f1], maxx1 = faces->maxx[f1], miny1 = faces->miny[f1], maxy1 = faces->maxy[f1];
             int minx2 = faces->minx[f2], maxx2 = faces->maxx[f2], miny2 = faces->miny[f2], maxy2 = faces->maxy[f2];
 
-            if (maxx1 <= minx2 || maxx2 <= minx1) { t_success[2]++; if (paint_diag) fprintf(paint_diag, "Test2 success (X separation) for (%d,%d)\n", f1, f2); continue; }
+            if (maxx1 <= minx2 || maxx2 <= minx1) continue;
+            
             t3++;
-            t_calls[3]++;
             // Test 3 : Y overlap only
-            if (maxy1 <= miny2 || maxy2 <= miny1) { t_success[3]++; if (paint_diag) fprintf(paint_diag, "Test3 success (Y separation) for (%d,%d)\n", f1, f2); continue; }
+            if (maxy1 <= miny2 || maxy2 <= miny1) continue;
 
             // Use cached plane normals and d terms computed in calculateFaceDepths
             int n1 = faces->vertex_count[f1];
@@ -890,7 +818,7 @@ void painter_newell_sancha(Model3D* model, int face_count) {
             Fixed32 b2 = faces->plane_b[f2];
             Fixed32 c2 = faces->plane_c[f2];
             Fixed32 d2 = faces->plane_d[f2];
-            Fixed32 epsilon = FLOAT_TO_FIXED(0.01f);
+            Fixed32 epsilon = FLOAT_TO_FIXED(0.000001f);
 
             int obs_side1 = 0; // côté de l'observateur par rapport au plan de f1 : +1, -1 ou 0 (inconclusive)
             int obs_side2 = 0; // côté de l'observateur par rapport au plan de f2 : +1, -1 ou 0 (inconclusive)
@@ -899,25 +827,24 @@ void painter_newell_sancha(Model3D* model, int face_count) {
             int all_opposite_side; // flag pour indiquer si tous les vertex sont du coté opposé
             Fixed32 test_value;
 
+            t4++;
             // Test 4 : Test si f2 est du même côté que l'observatur par rapport au plan de f1. 
             // Si oui, f2 est bien devant f1, pas d'échange.
-            t4++;
-            t_calls[4]++;
             if (ENABLE_DEBUG_SAVE) {
-                if (paint_diag) fprintf(paint_diag, "Test4: Testing faces %d and %d\n", f1, f2);
+            printf("Test 4 : Testing faces %d and %d\n", f1, f2);
             }
+            //keypress();
             obs_side1 = 0; // sign of d1: +1, -1 or 0 (inconclusive)
             if (d1 > epsilon) obs_side1 = 1; 
             else if (d1 < -epsilon) obs_side1 = -1;
-            else { t_inconclusive[4]++; if (paint_diag) fprintf(paint_diag, "Test4 inconclusive for pair (%d,%d) observer on plane\n", f1, f2); goto skipT4; } // si l'observateur est sur le plan, on ne peut rien conclure, il faut faire d'autres tests
+            else goto skipT4; // si l'observateur est sur le plan, on ne peut rien conclure, il faut faire d'autres tests
             all_same_side = 1;
             for (k=0; k<n2; k++) {
                     int v = faces->vertex_indices_buffer[offset2+k]-1;
-                //     test_value = a1*vtx->xo[v] + b1*vtx->yo[v] + c1*vtx->zo[v] + d1;
-                        test_value = a2*vtx->xo[v] + b2*vtx->yo[v] + c2*vtx->zo[v] + d2;
+                    // test_value = a1*vtx->xo[v] + b1*vtx->yo[v] + c1*vtx->zo[v] + d1;
+                    test_value = a2*vtx->xo[v] + b2*vtx->yo[v] + c2*vtx->zo[v] + d2;
                     if  (test_value > epsilon) side = 1;
                     else if (test_value < -epsilon) side = -1;
-                    else side = 0;
                     if (obs_side1 != side) { 
                         // si un vertex est de l'autre coté, on sort de la boucle
                         // et on met le flag à 0 pour indiquer que le test a échoué (et passer au test suivant)
@@ -925,60 +852,57 @@ void painter_newell_sancha(Model3D* model, int face_count) {
                         break; 
                     }
             }
-            if (all_same_side) { t_success[4]++; if (paint_diag) fprintf(paint_diag, "Test4 success (all_same_side) for (%d,%d)\n", f1, f2); continue; } // faces are ordered correctly, move to next pair
+            if (all_same_side) continue; // faces are ordered correctly, move to next pair
 
             skipT4:
 
-
+            t5++;
             // Test 5 : Test si f1 est du coté opposé de l'observateur par rapport au plan de f2.      
             // Si oui, f1 est devant f2, pas d'échange
-            t5++;
-            t_calls[5]++;
             if (ENABLE_DEBUG_SAVE) {
-                if (paint_diag) fprintf(paint_diag, "Test5: Testing faces %d and %d\n", f1, f2);
-            }
+            printf("Test 5 : Testing faces %d and %d\n", f1, f2);
+          }
             obs_side2 = 0; // sign of d1: +1, -1 or 0 (inconclusive)
             if (d2 > epsilon) obs_side2 = 1; 
             else if (d2 < -epsilon) obs_side2 = -1;
-            else { t_inconclusive[5]++; if (paint_diag) fprintf(paint_diag, "Test5 inconclusive for pair (%d,%d) observer on plane\n", f1, f2); goto skipT5; } // si l'observateur est sur le plan, on ne peut rien conclure, il faut faire d'autres tests
+            else goto skipT5; // si l'observateur est sur le plan, on ne peut rien conclure, il faut faire d'autres tests
             all_opposite_side = 1;
             for (k=0; k<n1; k++) {
                 int v = faces->vertex_indices_buffer[offset1+k]-1;
-                test_value = a1*vtx->xo[v] + b1*vtx->yo[v] + c1*vtx->zo[v] + d1;
                 // test_value = a2*vtx->xo[v] + b2*vtx->yo[v] + c2*vtx->zo[v] + d2;
+                test_value = a1*vtx->xo[v] + b1*vtx->yo[v] + c1*vtx->zo[v] + d1;
                 if  (test_value > epsilon) side = 1;
                 else if (test_value < -epsilon) side = -1;
-                else side = 0;
                 if (obs_side2 == side) {
                     // si un vertex est du même coté, on sort de la boucle
                     // et on met le flag à 0 pour indiquer que le test a échoué (et passer au test suivant)
-                    if (paint_diag) fprintf(paint_diag, "vertex %d same side as observer for pair (%d,%d)\n", v, f1, f2);
                     all_opposite_side = 0; 
                     break; }
                 }
-                if (all_opposite_side) { t_success[5]++; if (paint_diag) fprintf(paint_diag, "Test5 success (all_opposite_side) for (%d,%d)\n", f1, f2); continue; } // faces are ordered correctly, move to next pair
+                if (all_opposite_side) continue; // faces are ordered correctly, move to next pair
             
             skipT5:
 
-            // Test 6 : Test si f2 est du côté opposé de l'observateur par rapport au plan de f1. 
+            t6++;
+            // Test 6 : Test si f2 est du  côté opposé de l'observateur par rapport au plan de f1. 
             // Si oui, f2 est derrière f1, on doit échanger l'ordre
-              t6++;  t_calls[6]++;
+                
             if (ENABLE_DEBUG_SAVE) {
-                if (paint_diag) fprintf(paint_diag, "Test6: Testing faces %d and %d\n", f1, f2);
-            }
+            printf("Test 6 : Testing faces %d and %d\n", f1, f2);
+                }
             obs_side1 = 0; // sign of d1: +1, -1 or 0 (inconclusive)
             if (d1 > epsilon) obs_side1 = 1; 
             else if (d1 < -epsilon) obs_side1 = -1;
-            else { t_inconclusive[6]++; if (paint_diag) fprintf(paint_diag, "Test6 inconclusive for pair (%d,%d) observer on plane\n", f1, f2); goto skipT6; } // si l'observateur est sur le plan, on ne peut rien conclure, il faut faire d'autres tests
+            else goto skipT6; // si l'observateur est sur le plan, on ne peut rien conclure, il faut faire d'autres tests
 
                 all_opposite_side = 1;
                 for (k=0; k<n2; k++) {
                     int v = faces->vertex_indices_buffer[offset2+k]-1;
                     int side;
-                    // test_value = a1*vtx->xo[v] + b1*vtx->yo[v] + c1*vtx->zo[v] + d1;
                     test_value = a2*vtx->xo[v] + b2*vtx->yo[v] + c2*vtx->zo[v] + d2;
+                    // test_value = a1*vtx->xo[v] + b1*vtx->yo[v] + c1*vtx->zo[v] + d1;
                     if  (test_value > epsilon) side = 1;
-                    else if  (test_value < -epsilon) side = -1;
+                    else side = -1;
                     if (obs_side1 == side) { 
                         all_opposite_side = 0; 
                         break; 
@@ -990,22 +914,22 @@ void painter_newell_sancha(Model3D* model, int face_count) {
                 // Si on arrive ici, f2 est du même côté que l'observateur, donc f2 est devant f1
                 // on peut donc inverser l'ordre des faces
                 else {
-                    t_calls[6]++; t_success[6]++; if (paint_diag) fprintf(paint_diag, "Test6 success (f2 behind f1 -> swap) for (%d,%d)\n", f1, f2);
                     goto do_swap;
                 }
 
             skipT6: ;
 
+            t7++;
             // Test 7 : Test si f1 est du même côté de l'observateur par rapport au plan de f2. 
             // Si oui, f1 est devant f2, on doit échanger l'ordre
-                t7++; t_calls[7]++;
+
             if (ENABLE_DEBUG_SAVE) {
-                if (paint_diag) fprintf(paint_diag, "Test7: Testing faces %d and %d\n", f1, f2);
-            }
+            printf("Test 7 : Testing faces %d and %d\n", f1, f2);
+                }
             obs_side2 = 0; // sign of d1: +1, -1 or 0 (inconclusive)
             if (d2 > epsilon) obs_side2 = 1; 
             else if (d2 < -epsilon) obs_side2 = -1;
-            else { t_inconclusive[7]++; if (paint_diag) fprintf(paint_diag, "Test7 inconclusive for pair (%d,%d) observer on plane\n", f1, f2); goto skipT7; } // si l'observateur est sur le plan, on ne peut rien conclure, il faut faire d'autres tests
+            else goto skipT7; // si l'observateur est sur le plan, on ne peut rien conclure, il faut faire d'autres tests
             all_same_side = 1;
             for (k=0; k<n1; k++) {
                 int v = faces->vertex_indices_buffer[offset1+k]-1;
@@ -1023,154 +947,36 @@ void painter_newell_sancha(Model3D* model, int face_count) {
                 // f1 n'est pas du même côté de l'observateur, donc f1 n'est pas devant f2
                 // on ne doit pas échanger l'ordre des faces
                 else {
-                    t_calls[7]++; t_success[7]++; if (paint_diag) fprintf(paint_diag, "Test7 success (all_same_side -> swap) for (%d,%d)\n", f1, f2);
                     goto do_swap;
                 }
 
             do_swap: {
 
                 if (ENABLE_DEBUG_SAVE) {
-                    if (paint_diag) fprintf(paint_diag, "Consider swap faces %d and %d\n", f1, f2);
+                printf("Swapping faces %d and %d\n", f1, f2);
+                // removed blocking keypress() to avoid hangs in GS runtime
                 }
 
-                // Manage swap history to detect oscillations and lock pairs if necessary
-                int a = (f1 < f2) ? f1 : f2;
-                int b = (f1 < f2) ? f2 : f1;
-                int idx = -1;
-                for (int sh = 0; sh < swap_hist_count; ++sh) {
-                    if (swap_hist[sh].a == a && swap_hist[sh].b == b) { idx = sh; break; }
-                }
-                if (idx == -1 && swap_hist_capacity > 0) {
-                    // add new entry
-                    idx = swap_hist_count++;
-                    swap_hist[idx].a = a;
-                    swap_hist[idx].b = b;
-                    swap_hist[idx].count = 0;
-                    swap_hist[idx].locked = 0;
-                }
-
-                if (idx != -1 && swap_hist[idx].locked) {
-                    // Pair locked, keep existing order and mark as ordered
-                    if (paint_diag) fprintf(paint_diag, "Swap suppressed for locked pair (%d,%d)\n", f1, f2);
-                    if (ordered_pairs != NULL && ordered_pairs_count < ordered_pairs_capacity) {
-                        ordered_pairs[ordered_pairs_count].face1 = f2;
-                        ordered_pairs[ordered_pairs_count].face2 = f1;
-                        ordered_pairs_count++;
-                    }
-                } else if (idx != -1 && swap_hist[idx].count >= 1) {
-                    // Second swap observed -> lock in deterministic order (small index first)
-                    if (paint_diag) fprintf(paint_diag, "Locking pair (%d,%d) after repeated swaps; enforcing order %d < %d\n", f1, f2, a, b);
-                    // enforce a before b at positions i and i+1
-                    faces->sorted_face_indices[i] = a;
-                    faces->sorted_face_indices[i+1] = b;
-                    swap_hist[idx].locked = 1;
-                    tie_break_locked_total++;
-                    // mark as ordered
-                    if (ordered_pairs != NULL && ordered_pairs_count < ordered_pairs_capacity) {
-                        ordered_pairs[ordered_pairs_count].face1 = b;
-                        ordered_pairs[ordered_pairs_count].face2 = a;
-                        ordered_pairs_count++;
-                    }
-                } else {
-                    // Normal swap
-                    int tmp = faces->sorted_face_indices[i];
-                    faces->sorted_face_indices[i] = faces->sorted_face_indices[i+1];
-                    faces->sorted_face_indices[i+1] = tmp;
-                    swapped = 1;
-                    swap_count++;
-                    if (idx != -1) swap_hist[idx].count++;
-                    if (paint_diag) fprintf(paint_diag, "Performed swap for (%d,%d), swap_count=%d\n", f1, f2, (idx!=-1?swap_hist[idx].count:0));
-                    // Ajouter cette paire à la liste des paires ordonnées
-                    if (ordered_pairs != NULL && ordered_pairs_count < ordered_pairs_capacity) {
-                        ordered_pairs[ordered_pairs_count].face1 = f2;
-                        ordered_pairs[ordered_pairs_count].face2 = f1;
-                        ordered_pairs_count++;
-                    }
+                int tmp = faces->sorted_face_indices[i];
+                faces->sorted_face_indices[i] = faces->sorted_face_indices[i+1];
+                faces->sorted_face_indices[i+1] = tmp;
+                swapped = 1;
+                swap_count++;
+                
+                // Ajouter cette paire à la liste des paires ordonnées
+                // Après l'échange, f2 est maintenant avant f1 dans le tableau
+                // Utiliser uniquement le buffer préalloué (pas de realloc) : si on dépasse la capacité, on ignore la paire
+                if (ordered_pairs != NULL && ordered_pairs_count < ordered_pairs_capacity) {
+                    ordered_pairs[ordered_pairs_count].face1 = f2;
+                    ordered_pairs[ordered_pairs_count].face2 = f1;
+                    ordered_pairs_count++;
                 }
             }
 
         skipT7: ;
-        undetermined++;
         if (ENABLE_DEBUG_SAVE){
-                if (paint_diag) fprintf(paint_diag, "Undetermined pair (%d,%d)\n", f1, f2);
+                printf("NON CONCLUTANT POUR LES FACES %d ET %d\n", f1, f2);
         }
-
-        // Dump detailed info for undetermined pairs (for offline analysis)
-        if (undet_log && undet_log_count < 500) {
-            undet_log_count++;
-            fprintf(undet_log, "Undetermined pair (%d,%d) pass=%d\n", f1, f2, pass_number);
-            fprintf(undet_log, " zmin1=%.6f zmax1=%.6f zmin2=%.6f zmax2=%.6f\n",
-                    FIXED_TO_FLOAT(faces->z_min[f1]), FIXED_TO_FLOAT(faces->z_max[f1]),
-                    FIXED_TO_FLOAT(faces->z_min[f2]), FIXED_TO_FLOAT(faces->z_max[f2]));
-            fprintf(undet_log, " bbox1=(%d,%d,%d,%d) bbox2=(%d,%d,%d,%d)\n",
-                    faces->minx[f1], faces->maxx[f1], faces->miny[f1], faces->maxy[f1],
-                    faces->minx[f2], faces->maxx[f2], faces->miny[f2], faces->maxy[f2]);
-            fprintf(undet_log, " plane1=(%.6f,%.6f,%.6f,%.6f) plane2=(%.6f,%.6f,%.6f,%.6f)\n",
-                    FIXED_TO_FLOAT(faces->plane_a[f1]), FIXED_TO_FLOAT(faces->plane_b[f1]), FIXED_TO_FLOAT(faces->plane_c[f1]), FIXED_TO_FLOAT(faces->plane_d[f1]),
-                    FIXED_TO_FLOAT(faces->plane_a[f2]), FIXED_TO_FLOAT(faces->plane_b[f2]), FIXED_TO_FLOAT(faces->plane_c[f2]), FIXED_TO_FLOAT(faces->plane_d[f2]));
-            int n1 = faces->vertex_count[f1];
-            int n2 = faces->vertex_count[f2];
-            int off1 = faces->vertex_indices_ptr[f1];
-            int off2 = faces->vertex_indices_ptr[f2];
-            fprintf(undet_log, " f1_vertices:");
-            for (int jj = 0; jj < n1; ++jj) {
-                int vid = faces->vertex_indices_buffer[off1 + jj] - 1;
-                if (vid >= 0) fprintf(undet_log, " %d(zo=%.6f x2d=%d y2d=%d)", vid, FIXED_TO_FLOAT(vtx->zo[vid]), vtx->x2d[vid], vtx->y2d[vid]);
-                else fprintf(undet_log, " NA");
-            }
-            fprintf(undet_log, "\n f2_vertices:");
-            for (int jj = 0; jj < n2; ++jj) {
-                int vid = faces->vertex_indices_buffer[off2 + jj] - 1;
-                if (vid >= 0) fprintf(undet_log, " %d(zo=%.6f x2d=%d y2d=%d)", vid, FIXED_TO_FLOAT(vtx->zo[vid]), vtx->x2d[vid], vtx->y2d[vid]);
-                else fprintf(undet_log, " NA");
-            }
-            // shared vertices
-            fprintf(undet_log, "\n shared_idx:");
-            int shared_local = 0;
-            for (int jj = 0; jj < n1; ++jj) {
-                int a = faces->vertex_indices_buffer[off1 + jj];
-                for (int kk = 0; kk < n2; ++kk) {
-                    int b = faces->vertex_indices_buffer[off2 + kk];
-                    if (a == b) { fprintf(undet_log, " %d", a); shared_local = 1; }
-                }
-            }
-            fprintf(undet_log, "\n----\n");
-            fflush(undet_log);
-
-            // If shared vertices, apply conservative tie-breaker now (deterministic)
-            if (shared_local) {
-                // Prefer lower face index to come first
-                if (f1 > f2) {
-                    // swap in place in sorted_face_indices
-                    int tmp = faces->sorted_face_indices[i];
-                    faces->sorted_face_indices[i] = faces->sorted_face_indices[i+1];
-                    faces->sorted_face_indices[i+1] = tmp;
-                    swapped = 1;
-                    swap_count++;
-                    tie_break_shared_total++;
-                    if (paint_diag) fprintf(paint_diag, "Tie-break applied (shared vertices). Swapped (%d,%d)\n", f1, f2);
-                    // record ordered pair
-                    if (ordered_pairs != NULL && ordered_pairs_count < ordered_pairs_capacity) {
-                        ordered_pairs[ordered_pairs_count].face1 = f2;
-                        ordered_pairs[ordered_pairs_count].face2 = f1;
-                        ordered_pairs_count++;
-                    }
-                    // skip further handling for this pair
-                    continue;
-                } else {
-                    // Keep order but note tie-break applied
-                    tie_break_shared_total++;
-                    if (paint_diag) fprintf(paint_diag, "Tie-break applied (shared vertices). Kept order for (%d,%d)\n", f1, f2);
-                    if (ordered_pairs != NULL && ordered_pairs_count < ordered_pairs_capacity) {
-                        ordered_pairs[ordered_pairs_count].face1 = f2;
-                        ordered_pairs[ordered_pairs_count].face2 = f1;
-                        ordered_pairs_count++;
-                    }
-                    continue;
-                }
-            }
-        }
-
         // on les met dans la liste des paires ordonnées pour ne plus les tester
         if (ordered_pairs != NULL && ordered_pairs_count < ordered_pairs_capacity) {
                 ordered_pairs[ordered_pairs_count].face1 = f2;
@@ -1180,58 +986,26 @@ void painter_newell_sancha(Model3D* model, int face_count) {
         // keypress();
         // Ici, on devrait découper f1 par f2 (ou inversement), mais on ne le fait pas pour l'instant
         }
-        if (paint_diag) fprintf(paint_diag, "i = %d/%d\n", i, face_count);
-        if (ENABLE_DEBUG_SAVE) {
-                if (paint_diag) fprintf(paint_diag, "Pass completed, swaps this pass: %d\n", swap_count);
+        if (ENABLE_DEBUG_SAVE) {printf("Pass completed, swaps this pass: %d\n", swap_count);
                 // removed blocking keypress();
-                if (swapped) {
-                        if (paint_diag) fprintf(paint_diag, "swapped = %d\n", swapped);
-                        }
+        if (swapped) {
+                printf("swapped = %d\n", swapped);
+                keypress();
+                }
         }
-        pass_number++;
-        if (paint_diag) fprintf(paint_diag, "T1=%d T2=%d T3=%d T4=%d T5=%d T6=%d T7=%d\n", t1, t2, t3, t4, t5, t6, t7);
+
+        if (ENABLE_DEBUG_SAVE) {
+        printf("t1=%d t2=%d t3=%d t4=%d t5=%d t6=%d t7=%d\n", t1, t2, t3, t4, t5, t6, t7);
+        keypress();
+        }
 
     } while (swapped);
-
-    // Final diagnostics summary
-    if (ENABLE_DEBUG_SAVE) {
-        printf("nombre de passe : %d\n", pass_number);
-        printf("Total swaps performed: %d\n", swap_count);
-        printf("Undetermined: %d\n", undetermined);
-    }
-
-    if (paint_diag) {
-        fprintf(paint_diag, "nombre de passe : %d\n", pass_number);
-        fprintf(paint_diag, "Total swaps performed: %d\n", swap_count);
-        fprintf(paint_diag, "Undetermined: %d\n", undetermined);
-        fprintf(paint_diag, "Tie-breaks applied (shared vertex): %d\n", tie_break_shared_total);
-        fprintf(paint_diag, "Painter diagnostics summary:\n");
-        for (int ti = 1; ti <= 7; ++ti) {
-            fprintf(paint_diag, " Test %d: calls=%lld success=%lld inconclusive=%lld\n", ti, t_calls[ti], t_success[ti], t_inconclusive[ti]);
-        }
-        fprintf(paint_diag, "Shared vertex fails (Test1): %d\n", shared_vertex_total);
-        fflush(paint_diag);
-        fclose(paint_diag);
-        paint_diag = NULL;
-    }
-    if (undet_log) {
-        fprintf(undet_log, "Final undetermined count : %d\n", undetermined);
-        fprintf(undet_log, "Tie-breaks applied (shared vertex) : %d\n", tie_break_shared_total);
-        fflush(undet_log);
-        fclose(undet_log);
-        undet_log = NULL;
-    }
-
-    // Suppress console output to speed up headless tests. Summary already written to paintdiag.log.
+    
     // Libérer la mémoire de la liste des paires ordonnées
     if (ordered_pairs) {
         free(ordered_pairs);
-    }
-    if (swap_hist) {
-        free(swap_hist);
-    }
+    }    
 }
-
 /**
  * UTILITY FUNCTIONS
  * ==================
@@ -1920,14 +1694,14 @@ void processModelFast(Model3D* model, ObserverParams* params, const char* filena
 
     // painter_newell_sancha (remplace sortFacesByDepth)
     t_start = GetTick();
-    painter_newell_sancha(model, model->faces.face_count);
+    if (painterFastMode) painter_newell_sancha_fast(model, model->faces.face_count);
+    else painter_newell_sancha(model, model->faces.face_count);
     t_end = GetTick();
-
     if (!PERFORMANCE_MODE)
     {
         long elapsed = t_end - t_start;
         double ms = ((double)elapsed * 1000.0) / 60.0; // 60 ticks per second
-        printf("[TIMING] painter_newell_sancha: %ld ticks (%.2f ms)\n", elapsed, ms);
+        printf("[TIMING] %s: %ld ticks (%.2f ms)\n", painterFastMode ? "painter_newell_sancha_fast" : "painter_newell_sancha", elapsed, ms);
         keypress();
     }
 }
@@ -2294,7 +2068,7 @@ void calculateFaceDepths(Model3D* model, Face3D* faces, int face_count) {
             int vertex_idx = face_arrays->vertex_indices_buffer[offset + j] - 1;
             if (vertex_idx >= 0) {
                 Fixed32 zo = vtx->zo[vertex_idx];
-                if (zo < 0) display_flag = 0; // set display_flag if any vertex is behind camera (zo < 0)
+                if (zo < 0) display_flag = 0; // strictly behind camera
                 if (zo < z_min) z_min = zo;  // Find minimum (closest)
                 if (zo > z_max) z_max = zo;  // Find maximum (farthest)
                 sum += zo;
@@ -2306,53 +2080,54 @@ void calculateFaceDepths(Model3D* model, Face3D* faces, int face_count) {
                 if (y2d > maxy) maxy = y2d;
             }
         }
-        // Compute plane coefficients using the first three vertices (observer space). Do NOT normalize.
+        // Compute plane coefficients (a,b,c,d) using only the first 3 vertices (observer space)
+        // Formules (Fixed32 arithmetic, NO normalization):
+        // a := y1 * (z2 - z3) + y2 * (z3 - z1) + y3 * (z1 - z2);
+        // b := -x1 * (z2 - z3) + x2 * (z1 - z3) - x3 * (z1 - z2);
+        // c := x1 * (y2 - y3) - x2 * (y1 - y3) + x3 * (y1 - y2);
+        // d := -x1 * (y2 * z3 - y3 * z2) + x2 * (y1 * z3 - y3 * z1) - x3 * (y1 * z2 - y2 * z1);
         Fixed32 a = 0, b = 0, c = 0, d = 0;
-        if (n >= 3) {
-            int idx1 = face_arrays->vertex_indices_buffer[offset] - 1;
-            int idx2 = face_arrays->vertex_indices_buffer[offset + 1] - 1;
-            int idx3 = face_arrays->vertex_indices_buffer[offset + 2] - 1;
-            if (idx1 >= 0 && idx2 >= 0 && idx3 >= 0) {
-                Fixed32 x1 = vtx->xo[idx1], y1 = vtx->yo[idx1], z1 = vtx->zo[idx1];
-                Fixed32 x2 = vtx->xo[idx2], y2 = vtx->yo[idx2], z2 = vtx->zo[idx2];
-                Fixed32 x3 = vtx->xo[idx3], y3 = vtx->yo[idx3], z3 = vtx->zo[idx3];
-
-                // a := y1 * (z2 - z3) + y2 * (z3 - z1) + y3 * (z1 - z2)
-                Fixed32 ta1 = FIXED_MUL_64(y1, FIXED_SUB(z2, z3));
-                Fixed32 ta2 = FIXED_MUL_64(y2, FIXED_SUB(z3, z1));
-                Fixed32 ta3 = FIXED_MUL_64(y3, FIXED_SUB(z1, z2));
-                a = FIXED_ADD(FIXED_ADD(ta1, ta2), ta3);
-
-                // b := -x1 * (z2 - z3) + x2 * (z1 - z3) - x3 * (z1 - z2)
-                Fixed32 tb1 = FIXED_MUL_64(FIXED_NEG(x1), FIXED_SUB(z2, z3));
-                Fixed32 tb2 = FIXED_MUL_64(x2, FIXED_SUB(z1, z3));
-                Fixed32 tb3 = FIXED_MUL_64(FIXED_NEG(x3), FIXED_SUB(z1, z2));
-                b = FIXED_ADD(FIXED_ADD(tb1, tb2), tb3);
-
-                // c := x1 * (y2 - y3) - x2 * (y1 - y3) + x3 * (y1 - y2)
-                Fixed32 tc1 = FIXED_MUL_64(x1, FIXED_SUB(y2, y3));
-                Fixed32 tc2 = FIXED_MUL_64(FIXED_NEG(x2), FIXED_SUB(y1, y3));
-                Fixed32 tc3 = FIXED_MUL_64(x3, FIXED_SUB(y1, y2));
-                c = FIXED_ADD(FIXED_ADD(tc1, tc2), tc3);
-
-                // d := -x1 * (y2 * z3 - y3 * z2) + x2 * (y1 * z3 - y3 * z1) - x3 * (y1 * z2 - y2 * z1)
-                Fixed32 id1 = FIXED_SUB(FIXED_MUL_64(y2, z3), FIXED_MUL_64(y3, z2));
-                Fixed32 id2 = FIXED_SUB(FIXED_MUL_64(y1, z3), FIXED_MUL_64(y3, z1));
-                Fixed32 id3 = FIXED_SUB(FIXED_MUL_64(y1, z2), FIXED_MUL_64(y2, z1));
-                Fixed32 dd1 = FIXED_MUL_64(FIXED_NEG(x1), id1);
-                Fixed32 dd2 = FIXED_MUL_64(x2, id2);
-                Fixed32 dd3 = FIXED_MUL_64(FIXED_NEG(x3), id3);
-                d = FIXED_ADD(FIXED_ADD(dd1, dd2), dd3);
-            } else {
-                a = b = c = d = 0;
-            }
+        if (!display_flag || n < 3) {
+            // face is behind camera or degenerate: zero coefficients
+            face_arrays->plane_a[i] = 0;
+            face_arrays->plane_b[i] = 0;
+            face_arrays->plane_c[i] = 0;
+            face_arrays->plane_d[i] = 0;
         } else {
-            a = b = c = d = 0;
+            int idx0 = face_arrays->vertex_indices_buffer[offset] - 1;
+            int idx1 = face_arrays->vertex_indices_buffer[offset + 1] - 1;
+            int idx2 = face_arrays->vertex_indices_buffer[offset + 2] - 1;
+            if (idx0 < 0 || idx1 < 0 || idx2 < 0) {
+                face_arrays->plane_a[i] = 0;
+                face_arrays->plane_b[i] = 0;
+                face_arrays->plane_c[i] = 0;
+                face_arrays->plane_d[i] = 0;
+            } else {
+                Fixed32 x1 = vtx->xo[idx0], y1 = vtx->yo[idx0], z1 = vtx->zo[idx0];
+                Fixed32 x2 = vtx->xo[idx1], y2 = vtx->yo[idx1], z2 = vtx->zo[idx1];
+                Fixed32 x3 = vtx->xo[idx2], y3 = vtx->yo[idx2], z3 = vtx->zo[idx2];
+
+                // a = y1*(z2-z3) + y2*(z3-z1) + y3*(z1-z2)
+                a = FIXED_ADD(FIXED_ADD(FIXED_MUL_64(y1, FIXED_SUB(z2, z3)), FIXED_MUL_64(y2, FIXED_SUB(z3, z1))), FIXED_MUL_64(y3, FIXED_SUB(z1, z2)));
+
+                // b = -x1*(z2-z3) + x2*(z1-z3) - x3*(z1-z2)
+                b = FIXED_SUB(FIXED_ADD(FIXED_NEG(FIXED_MUL_64(x1, FIXED_SUB(z2, z3))), FIXED_MUL_64(x2, FIXED_SUB(z1, z3))), FIXED_MUL_64(x3, FIXED_SUB(z1, z2)));
+
+                // c = x1*(y2-y3) - x2*(y1-y3) + x3*(y1-y2)
+                c = FIXED_ADD(FIXED_SUB(FIXED_MUL_64(x1, FIXED_SUB(y2, y3)), FIXED_MUL_64(x2, FIXED_SUB(y1, y3))), FIXED_MUL_64(x3, FIXED_SUB(y1, y2)));
+
+                // d = -x1*(y2*z3 - y3*z2) + x2*(y1*z3 - y3*z1) - x3*(y1*z2 - y2*z1)
+                Fixed32 t1 = FIXED_SUB(FIXED_MUL_64(y2, z3), FIXED_MUL_64(y3, z2));
+                Fixed32 t2 = FIXED_SUB(FIXED_MUL_64(y1, z3), FIXED_MUL_64(y3, z1));
+                Fixed32 t3 = FIXED_SUB(FIXED_MUL_64(y1, z2), FIXED_MUL_64(y2, z1));
+                d = FIXED_ADD(FIXED_ADD(FIXED_NEG(FIXED_MUL_64(x1, t1)), FIXED_MUL_64(x2, t2)), FIXED_NEG(FIXED_MUL_64(x3, t3)));
+
+                face_arrays->plane_a[i] = a;
+                face_arrays->plane_b[i] = b;
+                face_arrays->plane_c[i] = c;
+                face_arrays->plane_d[i] = d;
+            }
         }
-        face_arrays->plane_a[i] = a;
-        face_arrays->plane_b[i] = b;
-        face_arrays->plane_c[i] = c;
-        face_arrays->plane_d[i] = d;
 
         // Diagnostic: report suspiciously negative z_max values to help debug
         if (!PERFORMANCE_MODE) {
@@ -2391,59 +2166,43 @@ void calculateFaceDepths(Model3D* model, Face3D* faces, int face_count) {
 }
 
 
-/**
- * WRITE_FACE_PLANES TO CSV
- * ========================
- * Writes a CSV file "equ.csv" with one line per face containing:
- * id,a,b,c,d  (plane equation coefficients in floating point)
- * The file is closed at the end of the function.
- */
-void write_equ_csv(Model3D* model) {
-    if (model == NULL) return;
-    FaceArrays3D* faces = &model->faces;
-    VertexArrays3D* vtx = &model->vertices;
-    FILE* f = fopen("equ.csv", "w");
-    if (f == NULL) {
-        printf("Error: could not open equ.csv for writing\n");
+
+
+
+
+// Dump face plane coefficients and depth stats to CSV
+// Columns: face,a,b,c,d,z_min,z_mean,z_max,vertex_indices
+void dumpFaceEquationsCSV(Model3D* model, const char* csv_filename) {
+    if (model == NULL || csv_filename == NULL) return;
+    FILE* f = fopen(csv_filename, "w");
+    if (!f) {
+        printf("Error: cannot open '%s' for writing\n", csv_filename);
         return;
     }
-
-    // Header (extended with debug info)
-    fprintf(f, "id,a,b,c,d,display,v1,v2,v3,z1,z2,z3\n");
-
-    int fc = faces->face_count;
-    for (int i = 0; i < fc; ++i) {
+    FaceArrays3D* faces = &model->faces;
+    int face_count = faces->face_count;
+    fprintf(f, "face,a,b,c,d,z_min,z_mean,z_max,vertex_indices\n");
+    for (int i = 0; i < face_count; ++i) {
         float a = FIXED_TO_FLOAT(faces->plane_a[i]);
         float b = FIXED_TO_FLOAT(faces->plane_b[i]);
         float c = FIXED_TO_FLOAT(faces->plane_c[i]);
         float d = FIXED_TO_FLOAT(faces->plane_d[i]);
-        int display = faces->display_flag[i];
+        float zmin = FIXED_TO_FLOAT(faces->z_min[i]);
+        float zmean = FIXED_TO_FLOAT(faces->z_mean[i]);
+        float zmax = FIXED_TO_FLOAT(faces->z_max[i]);
+        fprintf(f, "%d,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,\"", i, a, b, c, d, zmin, zmean, zmax);
         int offset = faces->vertex_indices_ptr[i];
-        int v1 = -1, v2 = -1, v3 = -1;
-        float z1 = 0.0f, z2 = 0.0f, z3 = 0.0f;
-        if (faces->vertex_count[i] >= 1) {
-            v1 = faces->vertex_indices_buffer[offset] - 1;
-            if (v1 >= 0) z1 = FIXED_TO_FLOAT(vtx->zo[v1]);
+        int n = faces->vertex_count[i];
+        for (int j = 0; j < n; ++j) {
+            if (j) fputc(' ', f);
+            int vid = faces->vertex_indices_buffer[offset + j]; // keep OBJ 1-based index
+            fprintf(f, "%d", vid);
         }
-        if (faces->vertex_count[i] >= 2) {
-            v2 = faces->vertex_indices_buffer[offset + 1] - 1;
-            if (v2 >= 0) z2 = FIXED_TO_FLOAT(vtx->zo[v2]);
-        }
-        if (faces->vertex_count[i] >= 3) {
-            v3 = faces->vertex_indices_buffer[offset + 2] - 1;
-            if (v3 >= 0) z3 = FIXED_TO_FLOAT(vtx->zo[v3]);
-        }
-        fprintf(f, "%d,%.6f,%.6f,%.6f,%.6f,%d,%d,%d,%d,%.6f,%.6f,%.6f\n", i, a, b, c, d, display, v1, v2, v3, z1, z2, z3);
+        fprintf(f, "\"\n");
     }
-
-    // Close the file
     fclose(f);
-
-    if (!PERFORMANCE_MODE) printf("Wrote equ.csv (%d faces)\n", fc);
+    printf("Wrote face equations to %s (%d faces)\n", csv_filename, face_count);
 }
-
-
-
 
 // DEPRECATED: computeDistanceToFit
 // ---------------------------------
@@ -3322,14 +3081,31 @@ void DoText() {
                 colorpalette ^= 1; // Toggle between 0 and 1
                 goto loopReDraw;
 
-            case 70:  // 'F' - toggle frame-only polygon rendering
-            case 102: // 'f'
+case 70:  // 'F' - toggle fast/normal painter
+case 102: // 'f'
+    painterFastMode ^= 1;
+    printf("Fast painter: %s\n", painterFastMode ? "ON (tests 1-3 only)" : "OFF (full tests)");
+    if (model != NULL) {
+        printf("Reprocessing model with current mode...\n");
+        processModelFast(model, &params, filename);
+    }
+    goto loopReDraw;
+
+case 80:  // 'P' - toggle frame-only polygon rendering (was 'F')
+case 112: // 'p'
                 framePolyOnly ^= 1;
                 printf("Frame-only polygons: %s\n", framePolyOnly ? "ON" : "OFF");
                 if (!framePolyOnly && model != NULL) {
                     // Switched back to filled polygons — re-run full processing to recompute depths & ordering
                     printf("Switching to filled mode: reprocessing model (sorting faces)...\n");
                     processModelFast(model, &params, filename);
+                }
+                goto loopReDraw;
+
+            case 69:  // 'E' - dump face equations to equ.csv
+            case 101: // 'e'
+                if (model != NULL) {
+                    dumpFaceEquationsCSV(model, "equ.csv");
                 }
                 goto loopReDraw;
 
@@ -3358,7 +3134,9 @@ void DoText() {
                 printf("Arrow Up/Down: Increase/Decrease vertical angle\n");
                 printf("W/X: Increase/Decrease screen rotation angle\n");
                 printf("C: Toggle color palette display\n");
-                printf("F: Toggle frame-only polygons (default: OFF — polygons are filled by default)\n");
+                printf("F: Toggle fast painter (default: ON — tests 1-3 only)\n");
+                printf("P: Toggle frame-only polygons (default: OFF)\n");
+                printf("E: Dump face equations to equ.csv (debug)\n");
                 printf("N: Load new model\n");
                 printf("H: Display this help message\n");
                 printf("ESC: Quit program\n");
