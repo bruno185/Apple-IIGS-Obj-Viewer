@@ -1605,7 +1605,7 @@ void getObserverParams(ObserverParams* params, Model3D* model) {
  */
 void processModelFast(Model3D* model, ObserverParams* params, const char* filename) {
     int i;
-    Fixed32 rad_h, rad_v, rad_w;
+
     Fixed32 cos_h, sin_h, cos_v, sin_v, cos_w, sin_w;
     Fixed32 x, y, z, zo, xo, yo;
     Fixed32 inv_zo, x2d_temp, y2d_temp;

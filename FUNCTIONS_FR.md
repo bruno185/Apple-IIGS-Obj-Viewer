@@ -98,10 +98,8 @@ Ce fichier répertorie les fonctions majeures trouvées dans `GS3Dp.cc` et donne
 
 ## Sortie et diagnostic
 
-- `void write_equ_csv(Model3D* model)`
-  - Exporte les coefficients de chaque face (`a,b,c,d` + indices et z des 3 sommets) dans `equ.csv` de manière robuste (sanitization, emplacement de debug `EQUDBG.TXT`).
-
-- Diverses routines d'écriture/logging (création de `PAINTLOG.TXT`, `EQUDBG.TXT`) pour diagnostiquer l'oscillation et la corruption CSV.
+- `void dumpFaceEquationsCSV(Model3D* model, const char* csv_filename)`
+  - Exporte les coefficients de chaque face (`a,b,c,d` + indices et z des 3 sommets) dans `equ.csv` (ou fichier passé en paramètre).
 
 ---
 
