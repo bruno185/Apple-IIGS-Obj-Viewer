@@ -1638,37 +1638,9 @@ void processModelFast(Model3D* model, ObserverParams* params, const char* filena
     int vcount = vtx->vertex_count;
 
     long t_loop_start = GetTick();
-    for (i = 0; i < vcount; i++) {
-        x = x_arr[i];
-        y = y_arr[i];
-        z = z_arr[i];
-        // 3D transformation in pure Fixed32 (64-bit multiply)
-        Fixed32 term1 = FIXED_MUL_64(x, cos_h_cos_v);
-        Fixed32 term2 = FIXED_MUL_64(y, sin_h_cos_v);
-        Fixed32 term3 = FIXED_MUL_64(z, sin_v);
-        zo = FIXED_ADD(FIXED_SUB(FIXED_SUB(FIXED_NEG(term1), term2), term3), distance);
-        if (zo > 0) {
-            xo = FIXED_ADD(FIXED_NEG(FIXED_MUL_64(x, sin_h)), FIXED_MUL_64(y, cos_h));
-            yo = FIXED_ADD(FIXED_SUB(FIXED_NEG(FIXED_MUL_64(x, cos_h_sin_v)), FIXED_MUL_64(y, sin_h_sin_v)), FIXED_MUL_64(z, cos_v));
-            zo_arr[i] = zo;
-            xo_arr[i] = xo;
-            yo_arr[i] = yo;
-            inv_zo = FIXED_DIV_64(scale, zo);
-            x2d_temp = FIXED_ADD(FIXED_MUL_64(xo, inv_zo), centre_x_f);
-            y2d_temp = FIXED_SUB(centre_y_f, FIXED_MUL_64(yo, inv_zo));
-            x2d_arr[i] = FIXED_ROUND_TO_INT(FIXED_ADD(FIXED_SUB(FIXED_MUL_64(cos_w, FIXED_SUB(x2d_temp, centre_x_f)), FIXED_MUL_64(sin_w, FIXED_SUB(centre_y_f, y2d_temp))), centre_x_f));
-            y2d_arr[i] = FIXED_ROUND_TO_INT(FIXED_SUB(centre_y_f, FIXED_ADD(FIXED_MUL_64(sin_w, FIXED_SUB(x2d_temp, centre_x_f)), FIXED_MUL_64(cos_w, FIXED_SUB(centre_y_f, y2d_temp)))));
-                // XXX
-        //     x2d_arr[i] = (x2d_arr[i]- 160)*4 + 160; // stretch to full resolution
-        //     y2d_arr[i] = (y2d_arr[i]- 100)*4 + 100;
-        } else {
-            zo_arr[i] = zo;
-            xo_arr[i] = 0;
-            yo_arr[i] = 0;
-            x2d_arr[i] = -1;
-            y2d_arr[i] = -1;
-        }
-    }
+    // Transform to observer-space and project to 2D using shared helpers
+    transformToObserver(model, params);
+    projectTo2D(&model->vertices, params->angle_w);
     long t_loop_end = GetTick();
     if (!PERFORMANCE_MODE) {
         long elapsed_loop = t_loop_end - t_loop_start;
@@ -1746,37 +1718,10 @@ void processModelWireframe(Model3D* model, ObserverParams* params, const char* f
     int *vertex_indices_ptr = faces->vertex_indices_ptr;
     int *face_vertex_count = faces->vertex_count;
 
-    for (i = 0; i < vcount; i++) {
-        x = x_arr[i];
-        y = y_arr[i];
-        z = z_arr[i];
-        Fixed32 term1 = FIXED_MUL_64(x, cos_h_cos_v);
-        Fixed32 term2 = FIXED_MUL_64(y, sin_h_cos_v);
-        Fixed32 term3 = FIXED_MUL_64(z, sin_v);
-        zo = FIXED_ADD(FIXED_SUB(FIXED_SUB(FIXED_NEG(term1), term2), term3), distance);
-        if (zo > 0) {
-            // compute projected xy directly into x2d/y2d and store intermediate observer coords for depth tests
-            Fixed32 xo_local = FIXED_ADD(FIXED_NEG(FIXED_MUL_64(x, sin_h)), FIXED_MUL_64(y, cos_h));
-            Fixed32 yo_local = FIXED_ADD(FIXED_SUB(FIXED_NEG(FIXED_MUL_64(x, cos_h_sin_v)), FIXED_MUL_64(y, sin_h_sin_v)), FIXED_MUL_64(z, cos_v));
-            inv_zo = FIXED_DIV_64(scale, zo);
-            Fixed32 tmp_x = FIXED_ADD(FIXED_MUL_64(xo_local, inv_zo), centre_x_f);
-            Fixed32 tmp_y = FIXED_SUB(centre_y_f, FIXED_MUL_64(yo_local, inv_zo));
-            // apply screen rotation and round
-            x2d_arr[i] = FIXED_ROUND_TO_INT(FIXED_ADD(FIXED_SUB(FIXED_MUL_64(cos_w, FIXED_SUB(tmp_x, centre_x_f)), FIXED_MUL_64(sin_w, FIXED_SUB(centre_y_f, tmp_y))), centre_x_f));
-            y2d_arr[i] = FIXED_ROUND_TO_INT(FIXED_SUB(centre_y_f, FIXED_ADD(FIXED_MUL_64(sin_w, FIXED_SUB(tmp_x, centre_x_f)), FIXED_MUL_64(cos_w, FIXED_SUB(centre_y_f, tmp_y)))));
-            // Store observer-space coordinates so subsequent face tests see valid values
-            zo_arr[i] = zo;
-            xo_arr[i] = xo_local;
-            yo_arr[i] = yo_local;
-        } else {
-            // negative zo (behind camera) — mark as invalid projection and store zo<=0
-            zo_arr[i] = zo;
-            xo_arr[i] = 0;
-            yo_arr[i] = 0;
-            x2d_arr[i] = -1;
-            y2d_arr[i] = -1;
-        }
-    }
+    // Use shared transform and projection helpers for wireframe
+    transformToObserver(model, params);
+    projectTo2D(&model->vertices, params->angle_w);
+
 
     // Set simple visibility flag per face: visible if any vertex projected on-screen (x2d != -1)
     for (i = 0; i < faces->face_count; ++i) {
@@ -2010,6 +1955,56 @@ void projectTo2D(VertexArrays3D* vtx, int angle_w_deg) {
         } else {
             vtx->x2d[i] = -1;
             vtx->y2d[i] = -1;
+        }
+    }
+}
+
+/**
+ * TRANSFORM TO OBSERVER-SPACE (reusable)
+ * ======================================
+ * Computes `xo`, `yo`, `zo` for all vertices and stores them into `model->vertices`.
+ * This is a performance-sensitive, `static inline` helper that mirrors the
+ * previous inlined loops found in `processModelFast` and `processModelWireframe`.
+ */
+static inline void transformToObserver(Model3D* model, ObserverParams* params) {
+    int i;
+    Fixed32 cos_h, sin_h, cos_v, sin_v;
+    Fixed32 cos_h_cos_v, sin_h_cos_v, cos_h_sin_v, sin_h_sin_v;
+    Fixed32 x, y, z, zo, xo, yo;
+
+    VertexArrays3D* vtx = &model->vertices;
+    Fixed32 *x_arr = vtx->x, *y_arr = vtx->y, *z_arr = vtx->z;
+    Fixed32 *xo_arr = vtx->xo, *yo_arr = vtx->yo, *zo_arr = vtx->zo;
+    int vcount = vtx->vertex_count;
+    Fixed32 distance = params->distance;
+
+    cos_h = cos_deg_int(params->angle_h);
+    sin_h = sin_deg_int(params->angle_h);
+    cos_v = cos_deg_int(params->angle_v);
+    sin_v = sin_deg_int(params->angle_v);
+
+    cos_h_cos_v = FIXED_MUL_64(cos_h, cos_v);
+    sin_h_cos_v = FIXED_MUL_64(sin_h, cos_v);
+    cos_h_sin_v = FIXED_MUL_64(cos_h, sin_v);
+    sin_h_sin_v = FIXED_MUL_64(sin_h, sin_v);
+
+    for (i = 0; i < vcount; i++) {
+        x = x_arr[i];
+        y = y_arr[i];
+        z = z_arr[i];
+        Fixed32 term1 = FIXED_MUL_64(x, cos_h_cos_v);
+        Fixed32 term2 = FIXED_MUL_64(y, sin_h_cos_v);
+        Fixed32 term3 = FIXED_MUL_64(z, sin_v);
+        zo = FIXED_ADD(FIXED_SUB(FIXED_SUB(FIXED_NEG(term1), term2), term3), distance);
+        zo_arr[i] = zo;
+        if (zo > 0) {
+            xo = FIXED_ADD(FIXED_NEG(FIXED_MUL_64(x, sin_h)), FIXED_MUL_64(y, cos_h));
+            yo = FIXED_ADD(FIXED_SUB(FIXED_NEG(FIXED_MUL_64(x, cos_h_sin_v)), FIXED_MUL_64(y, sin_h_sin_v)), FIXED_MUL_64(z, cos_v));
+            xo_arr[i] = xo;
+            yo_arr[i] = yo;
+        } else {
+            xo_arr[i] = 0;
+            yo_arr[i] = 0;
         }
     }
 }
@@ -2992,6 +2987,7 @@ void DoText() {
                 printf("    Horizontal Angle: %d deg\n", params.angle_h);
                 printf("    Vertical Angle: %d deg\n", params.angle_v);
                 printf("    Screen Rotation Angle: %d deg\n", params.angle_w);
+                printf("    Painter mode: %s\n", painterFastMode ? "FAST (tests 1-3)" : "NORMAL (full tests)");
                 if (model->auto_scaled) {
                     printf("    Auto-scale: ON (factor %.4f, centered: %s)\n", FIXED_TO_FLOAT(model->auto_scale), model->auto_centered ? "yes" : "no");
                 } else {

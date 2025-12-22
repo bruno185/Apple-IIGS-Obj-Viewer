@@ -42,7 +42,7 @@ This project reads simplified OBJ files (vertices `v` and faces `f`), performs 3
 <!-- FUNC_LIST_START -->
 - 🔧 `void painter_newell_sancha_fast(Model3D* model, int face_count)` — `GS3Dp.cc:659`
 - 🔧 `void painter_newell_sancha(Model3D* model, int face_count)` — `GS3Dp.cc:705`
-- 🔧 `void dumpFaceEquationsCSV(Model3D* model, const char* csv_filename)` — `GS3Dp.cc:2179`
+- 🔧 `void dumpFaceEquationsCSV(Model3D* model, const char* csv_filename)` — `GS3Dp.cc:2174`
 - 🔧 `Model3D* createModel3D(void)` — `GS3Dp.cc:1036`
 - 🔧 `void destroyModel3D(Model3D* model)` — `GS3Dp.cc:1354`
 - 🔧 `int loadModel3D(Model3D* model, const char* filename)` — `GS3Dp.cc:1415`
@@ -50,9 +50,9 @@ This project reads simplified OBJ files (vertices `v` and faces `f`), performs 3
 - 🔧 `Fixed32 computeDistanceFromBoundingSphere(Model3D* model, float margin)` — `GS3Dp.cc:565`
 - 🔧 `void getObserverParams(ObserverParams* params, Model3D* model)` — `GS3Dp.cc:575`
 - 🔧 `void processModelFast(Model3D* model, ObserverParams* params, const char* filename)` — `GS3Dp.cc:1606`
-- 🔧 `void processModelWireframe(Model3D* model, ObserverParams* params, const char* filename)` — `GS3Dp.cc:1715`
+- 🔧 `void processModelWireframe(Model3D* model, ObserverParams* params, const char* filename)` — `GS3Dp.cc:1687`
 - 🔧 `int readVertices(const char* filename, VertexArrays3D* vtx, int max_vertices)` — `GS3Dp.cc:500`
-- 🔧 `int readFaces_model(const char* filename, Model3D* model)` — `GS3Dp.cc:1876`
+- 🔧 `int readFaces_model(const char* filename, Model3D* model)` — `GS3Dp.cc:1821`
 - 🔧 `void projectTo2D(VertexArrays3D* vtx, int angle_w_deg)` — `GS3Dp.cc:561`
 - 🔧 `void calculateFaceDepths(Model3D* model, Face3D* faces, int face_count)` — `GS3Dp.cc:629`
 - 🔧 `Fixed32 computeDistanceToFit(VertexArrays3D* vtx, float margin)` — `GS3Dp.cc:574`
@@ -62,7 +62,7 @@ This project reads simplified OBJ files (vertices `v` and faces `f`), performs 3
 - 🔧 `void freeBackupModelCoords(Model3D* model)` — `GS3Dp.cc:590`
 - 🔧 `void fitModelToView(Model3D* model, ObserverParams* params, float target_max_dim, float margin, float percentile, int center_flag)` — `GS3Dp.cc:582`
 - 🔧 `void drawPolygons(Model3D* model, int* vertex_count, int face_count, int vertex_count_total)` — `GS3Dp.cc:628`
-- 🔧 `int main()` — `GS3Dp.cc:2865`
+- 🔧 `int main()` — `GS3Dp.cc:2860`
 <!-- FUNC_LIST_END -->
 
 ## Credits
