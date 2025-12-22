@@ -665,6 +665,7 @@ void painter_newell_sancha_fast(Model3D* model, int face_count) {
     qsort(faces->sorted_face_indices, face_count, sizeof(int), cmp_faces_by_zmean);
     qsort_faces_ptr_for_cmp = NULL;
 
+/*    2. Correction stricte d'ordre avec les trois tests de plan (Newell/Sancha)
     int swapped;
     int pass = 0;
     const int max_passes = face_count * 2; // safety cap
@@ -698,7 +699,7 @@ void painter_newell_sancha_fast(Model3D* model, int face_count) {
 
         }
         pass++;
-    } while (swapped && pass < max_passes);
+    } while (swapped && pass < max_passes); */
 }
 
 void painter_newell_sancha(Model3D* model, int face_count) {
@@ -1598,7 +1599,6 @@ void getObserverParams(ObserverParams* params, Model3D* model) {
     }
 }
 
-
 /**
  * ULTRA-FAST FUNCTION: Combined Transformation + Projection
  * ==========================================================
@@ -1626,7 +1626,9 @@ void processModelFast(Model3D* model, ObserverParams* params, const char* filena
     const Fixed32 scale = INT_TO_FIXED(100); // avoid float conversion
     const Fixed32 centre_x_f = INT_TO_FIXED(CENTRE_X);
     const Fixed32 centre_y_f = INT_TO_FIXED(CENTRE_Y);
-    const Fixed32 distance = params->distance;
+    Fixed32 distance = params->distance;
+    // Apply auto-scale if any
+    //distance = FIXED_MUL_64(distance, INT_TO_FIXED(4));
     
     // 100% Fixed32 loop - ZERO conversions, maximum speed!
     VertexArrays3D* vtx = &model->vertices;
@@ -1656,6 +1658,9 @@ void processModelFast(Model3D* model, ObserverParams* params, const char* filena
             y2d_temp = FIXED_SUB(centre_y_f, FIXED_MUL_64(yo, inv_zo));
             x2d_arr[i] = FIXED_ROUND_TO_INT(FIXED_ADD(FIXED_SUB(FIXED_MUL_64(cos_w, FIXED_SUB(x2d_temp, centre_x_f)), FIXED_MUL_64(sin_w, FIXED_SUB(centre_y_f, y2d_temp))), centre_x_f));
             y2d_arr[i] = FIXED_ROUND_TO_INT(FIXED_SUB(centre_y_f, FIXED_ADD(FIXED_MUL_64(sin_w, FIXED_SUB(x2d_temp, centre_x_f)), FIXED_MUL_64(cos_w, FIXED_SUB(centre_y_f, y2d_temp)))));
+                // XXX
+        //     x2d_arr[i] = (x2d_arr[i]- 160)*4 + 160; // stretch to full resolution
+        //     y2d_arr[i] = (y2d_arr[i]- 100)*4 + 100;
         } else {
             zo_arr[i] = zo;
             xo_arr[i] = 0;
@@ -1670,8 +1675,6 @@ void processModelFast(Model3D* model, ObserverParams* params, const char* filena
         double ms_loop = ((double)elapsed_loop * 1000.0) / 60.0; // 60 ticks per second
         printf("[TIMING] transform+project loop: %ld ticks (%.2f ms)\n", elapsed_loop, ms_loop);
     }
-    
-
     
     // Face sorting after transformation
     long t_start, t_end;
@@ -1697,6 +1700,7 @@ void processModelFast(Model3D* model, ObserverParams* params, const char* filena
     if (painterFastMode) painter_newell_sancha_fast(model, model->faces.face_count);
     else painter_newell_sancha(model, model->faces.face_count);
     t_end = GetTick();
+
     if (!PERFORMANCE_MODE)
     {
         long elapsed = t_end - t_start;
