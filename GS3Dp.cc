@@ -822,25 +822,59 @@ void painter_newell_sancha(Model3D* model, int face_count) {
     // Quick diagnostic for small models (2 faces) to help analyze failing Newell/Sancha tests
     if (faces->face_count == 2) {
         int f1 = 0, f2 = 1;
-        printf("[DIAG] Two-face diagnostic: evaluating pair_should_swap and plane info\n");
-        printf("[DIAG] Face counts: n1=%d n2=%d\n", faces->vertex_count[f1], faces->vertex_count[f2]);
-        printf("[DIAG] Face 0 plane: a=%.6f b=%.6f c=%.6f d=%.6f zmin=%.6f zmax=%.6f zmean=%.6f\n",
-            FIXED_TO_FLOAT(faces->plane_a[f1]), FIXED_TO_FLOAT(faces->plane_b[f1]), FIXED_TO_FLOAT(faces->plane_c[f1]), FIXED_TO_FLOAT(faces->plane_d[f1]), FIXED_TO_FLOAT(faces->z_min[f1]), FIXED_TO_FLOAT(faces->z_max[f1]), FIXED_TO_FLOAT(faces->z_mean[f1]));
-        printf("[DIAG] Face 1 plane: a=%.6f b=%.6f c=%.6f d=%.6f zmin=%.6f zmax=%.6f zmean=%.6f\n",
-            FIXED_TO_FLOAT(faces->plane_a[f2]), FIXED_TO_FLOAT(faces->plane_b[f2]), FIXED_TO_FLOAT(faces->plane_c[f2]), FIXED_TO_FLOAT(faces->plane_d[f2]), FIXED_TO_FLOAT(faces->z_min[f2]), FIXED_TO_FLOAT(faces->z_max[f2]), FIXED_TO_FLOAT(faces->z_mean[f2]));
-        // Evaluate plane equations at each vertex
-        for (int k=0;k<faces->vertex_count[f2];k++) {
-            int v = faces->vertex_indices_buffer[faces->vertex_indices_ptr[f2]+k]-1;
-            Fixed32 tv = FIXED_ADD(FIXED_ADD(FIXED_ADD(FIXED_MUL_64(faces->plane_a[f1], vtx->xo[v]), FIXED_MUL_64(faces->plane_b[f1], vtx->yo[v])), FIXED_MUL_64(faces->plane_c[f1], vtx->zo[v])), faces->plane_d[f1]);
-            printf("[DIAG] Face1 plane at Face2 vertex %d: tv=%.6f (xo=%.6f yo=%.6f zo=%.6f)\n", v, FIXED_TO_FLOAT(tv), FIXED_TO_FLOAT(vtx->xo[v]), FIXED_TO_FLOAT(vtx->yo[v]), FIXED_TO_FLOAT(vtx->zo[v]));
+        FILE* df = fopen("PAIRDIAG.CSV", "w");
+        if (df) {
+            // Header
+            fprintf(df, "section,face,a,b,c,d,z_min,z_mean,z_max,vertex_indices\n");
+            // Face 0
+            fprintf(df, "face,%d,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,\"",
+                f1, FIXED_TO_FLOAT(faces->plane_a[f1]), FIXED_TO_FLOAT(faces->plane_b[f1]), FIXED_TO_FLOAT(faces->plane_c[f1]), FIXED_TO_FLOAT(faces->plane_d[f1]), FIXED_TO_FLOAT(faces->z_min[f1]), FIXED_TO_FLOAT(faces->z_mean[f1]), FIXED_TO_FLOAT(faces->z_max[f1]));
+            for (int k=0;k<faces->vertex_count[f1];k++) { int v = faces->vertex_indices_buffer[faces->vertex_indices_ptr[f1]+k]-1; fprintf(df, "%d ", v); }
+            fprintf(df, "\"\n");
+            // Face 1
+            fprintf(df, "face,%d,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,\"",
+                f2, FIXED_TO_FLOAT(faces->plane_a[f2]), FIXED_TO_FLOAT(faces->plane_b[f2]), FIXED_TO_FLOAT(faces->plane_c[f2]), FIXED_TO_FLOAT(faces->plane_d[f2]), FIXED_TO_FLOAT(faces->z_min[f2]), FIXED_TO_FLOAT(faces->z_mean[f2]), FIXED_TO_FLOAT(faces->z_max[f2]));
+            for (int k=0;k<faces->vertex_count[f2];k++) { int v = faces->vertex_indices_buffer[faces->vertex_indices_ptr[f2]+k]-1; fprintf(df, "%d ", v); }
+            fprintf(df, "\"\n");
+
+            // Per-vertex plane evaluations
+            fprintf(df, "eval,face_src,vertex_idx,tv,xo,yo,zo\n");
+            for (int k=0;k<faces->vertex_count[f2];k++) {
+                int v = faces->vertex_indices_buffer[faces->vertex_indices_ptr[f2]+k]-1;
+                Fixed32 tv = FIXED_ADD(FIXED_ADD(FIXED_ADD(FIXED_MUL_64(faces->plane_a[f1], vtx->xo[v]), FIXED_MUL_64(faces->plane_b[f1], vtx->yo[v])), FIXED_MUL_64(faces->plane_c[f1], vtx->zo[v])), faces->plane_d[f1]);
+                fprintf(df, "eval,%d,%d,%.6f,%.6f,%.6f,%.6f\n", f1, v, FIXED_TO_FLOAT(tv), FIXED_TO_FLOAT(vtx->xo[v]), FIXED_TO_FLOAT(vtx->yo[v]), FIXED_TO_FLOAT(vtx->zo[v]));
+            }
+            for (int k=0;k<faces->vertex_count[f1];k++) {
+                int v = faces->vertex_indices_buffer[faces->vertex_indices_ptr[f1]+k]-1;
+                Fixed32 tv = FIXED_ADD(FIXED_ADD(FIXED_ADD(FIXED_MUL_64(faces->plane_a[f2], vtx->xo[v]), FIXED_MUL_64(faces->plane_b[f2], vtx->yo[v])), FIXED_MUL_64(faces->plane_c[f2], vtx->zo[v])), faces->plane_d[f2]);
+                fprintf(df, "eval,%d,%d,%.6f,%.6f,%.6f,%.6f\n", f2, v, FIXED_TO_FLOAT(tv), FIXED_TO_FLOAT(vtx->xo[v]), FIXED_TO_FLOAT(vtx->yo[v]), FIXED_TO_FLOAT(vtx->zo[v]));
+            }
+
+            int res = pair_should_swap(faces, vtx, 0, 1);
+            fprintf(df, "pair_should_swap,%d\n", res);
+            fclose(df);
+            printf("[DIAG] pair diagnostic written to PAIRDIAG.CSV\n");
+        } else {
+            // Fallback to console output if file couldn't be opened
+            printf("[DIAG] Two-face diagnostic: evaluating pair_should_swap and plane info (file write failed)\n");
+            printf("[DIAG] Face counts: n1=%d n2=%d\n", faces->vertex_count[f1], faces->vertex_count[f2]);
+            printf("[DIAG] Face 0 plane: a=%.6f b=%.6f c=%.6f d=%.6f zmin=%.6f zmax=%.6f zmean=%.6f\n",
+                FIXED_TO_FLOAT(faces->plane_a[f1]), FIXED_TO_FLOAT(faces->plane_b[f1]), FIXED_TO_FLOAT(faces->plane_c[f1]), FIXED_TO_FLOAT(faces->plane_d[f1]), FIXED_TO_FLOAT(faces->z_min[f1]), FIXED_TO_FLOAT(faces->z_max[f1]), FIXED_TO_FLOAT(faces->z_mean[f1]));
+            printf("[DIAG] Face 1 plane: a=%.6f b=%.6f c=%.6f d=%.6f zmin=%.6f zmax=%.6f zmean=%.6f\n",
+                FIXED_TO_FLOAT(faces->plane_a[f2]), FIXED_TO_FLOAT(faces->plane_b[f2]), FIXED_TO_FLOAT(faces->plane_c[f2]), FIXED_TO_FLOAT(faces->plane_d[f2]), FIXED_TO_FLOAT(faces->z_min[f2]), FIXED_TO_FLOAT(faces->z_max[f2]), FIXED_TO_FLOAT(faces->z_mean[f2]));
+            for (int k=0;k<faces->vertex_count[f2];k++) {
+                int v = faces->vertex_indices_buffer[faces->vertex_indices_ptr[f2]+k]-1;
+                Fixed32 tv = FIXED_ADD(FIXED_ADD(FIXED_ADD(FIXED_MUL_64(faces->plane_a[f1], vtx->xo[v]), FIXED_MUL_64(faces->plane_b[f1], vtx->yo[v])), FIXED_MUL_64(faces->plane_c[f1], vtx->zo[v])), faces->plane_d[f1]);
+                printf("[DIAG] Face1 plane at Face2 vertex %d: tv=%.6f (xo=%.6f yo=%.6f zo=%.6f)\n", v, FIXED_TO_FLOAT(tv), FIXED_TO_FLOAT(vtx->xo[v]), FIXED_TO_FLOAT(vtx->yo[v]), FIXED_TO_FLOAT(vtx->zo[v]));
+            }
+            for (int k=0;k<faces->vertex_count[f1];k++) {
+                int v = faces->vertex_indices_buffer[faces->vertex_indices_ptr[f1]+k]-1;
+                Fixed32 tv = FIXED_ADD(FIXED_ADD(FIXED_ADD(FIXED_MUL_64(faces->plane_a[f2], vtx->xo[v]), FIXED_MUL_64(faces->plane_b[f2], vtx->yo[v])), FIXED_MUL_64(faces->plane_c[f2], vtx->zo[v])), faces->plane_d[f2]);
+                printf("[DIAG] Face2 plane at Face1 vertex %d: tv=%.6f (xo=%.6f yo=%.6f zo=%.6f)\n", v, FIXED_TO_FLOAT(tv), FIXED_TO_FLOAT(vtx->xo[v]), FIXED_TO_FLOAT(vtx->yo[v]), FIXED_TO_FLOAT(vtx->zo[v]));
+            }
+            int res = pair_should_swap(faces, vtx, 0, 1);
+            printf("[DIAG] pair_should_swap(0,1) -> %d\n", res);
         }
-        for (int k=0;k<faces->vertex_count[f1];k++) {
-            int v = faces->vertex_indices_buffer[faces->vertex_indices_ptr[f1]+k]-1;
-            Fixed32 tv = FIXED_ADD(FIXED_ADD(FIXED_ADD(FIXED_MUL_64(faces->plane_a[f2], vtx->xo[v]), FIXED_MUL_64(faces->plane_b[f2], vtx->yo[v])), FIXED_MUL_64(faces->plane_c[f2], vtx->zo[v])), faces->plane_d[f2]);
-            printf("[DIAG] Face2 plane at Face1 vertex %d: tv=%.6f (xo=%.6f yo=%.6f zo=%.6f)\n", v, FIXED_TO_FLOAT(tv), FIXED_TO_FLOAT(vtx->xo[v]), FIXED_TO_FLOAT(vtx->yo[v]), FIXED_TO_FLOAT(vtx->zo[v]));
-        }
-        int res = pair_should_swap(faces, vtx, 0, 1);
-        printf("[DIAG] pair_should_swap(0,1) -> %d\n", res);
     }
 
     // 3. Correction stricte d'ordre avec les deux tests de plan (Newell/Sancha)
