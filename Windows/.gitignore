@@ -1,0 +1,32 @@
+# Ignore generated CMake / Visual Studio build files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+GS3DpViewer.sln
+*.vcxproj
+*.vcxproj.filters
+
+# Build directories and outputs
+bin/
+Release/
+x64/
+viewer.dir/
+viewer_win32.dir/
+ALL_BUILD.dir/
+
+# MSBuild/VS temporary files
+**/*.tlog
+**/*.lastbuildstate
+**/*.recipe
+
+# Binaries
+*.exe
+*.obj
+
+# Other build directories
+build/
+build_mingw/
+build_vs/
+
+# Local install manifests
+install_local_manifest.txt
