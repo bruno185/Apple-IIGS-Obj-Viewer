@@ -301,9 +301,13 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
         if (part[0] == '-') break;
     }
 
-    // If file still doesn't exist, fall back to raw argv[1]
+    // If file still doesn't exist, fall back to raw argv[1] if provided
     if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) {
-        wcstombs(path, argv[1], sizeof(path));
+        if (argc > 1 && argv[1]) {
+            wcstombs(path, argv[1], sizeof(path));
+        } else {
+            path[0] = '\0';
+        }
     }
     // If still not found, search argv tokens for a token containing ".obj" (case-insensitive)
     if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) {
@@ -368,6 +372,22 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
 
     ShowWindow(hwnd, nCmdShow);
     UpdateWindow(hwnd);
+
+    // Ensure main window is visible and focused even when no model was provided
+    if (path[0] == '\0' || GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) {
+        SetWindowTextW(hwnd, L"GS3Dp Viewer (Win32 GDI) - No model loaded");
+        ShowWindow(hwnd, SW_SHOWNORMAL);
+        BringWindowToTop(hwnd);
+        SetForegroundWindow(hwnd);
+        // Inform user interactively to avoid silent exit when double-clicked
+        MessageBoxW(hwnd, L"No OBJ path provided. Use File->Open (Ctrl+O) to load a model.", L"Info", MB_OK | MB_ICONINFORMATION);
+        const char* tmp3 = getenv("TEMP"); char logfn3[1024]; if (tmp3) snprintf(logfn3, sizeof(logfn3), "%s\\viewer_win32.log", tmp3); else snprintf(logfn3, sizeof(logfn3), "viewer_win32.log"); FILE* lf3 = fopen(logfn3, "a"); if (lf3) { fprintf(lf3, "UI: showed No OBJ messagebox\n"); fclose(lf3); }
+    }
+
+    // Additional diagnostics: log visibility and cmdshow for debugging double-click exits
+    {
+        const char* tmp2 = getenv("TEMP"); char logfn2[1024]; if (tmp2) snprintf(logfn2, sizeof(logfn2), "%s\\viewer_win32.log", tmp2); else snprintf(logfn2, sizeof(logfn2), "viewer_win32.log"); FILE* lf = fopen(logfn2, "a"); if (lf) { fprintf(lf, "UI: ShowWindow called nCmdShow=%d IsWindowVisible=%d\n", nCmdShow, IsWindowVisible(hwnd)); fclose(lf); }
+    }
 
     // initial paint
     InvalidateRect(hwnd, NULL, TRUE);
