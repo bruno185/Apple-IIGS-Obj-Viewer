@@ -27,28 +27,31 @@ typedef struct { float xo, yo, zo; } ObsVertex;
 
 // Exposed: compute observer-space vertices for rendering / comparison
 void compute_obs_vertices(Model* m, ObsVertex* out) {
-    float ah = s_angle_h * (M_PI/180.0f);
-    float av = s_angle_v * (M_PI/180.0f);
-    float ch = cosf(ah), sh = sinf(ah); float cv = cosf(av), sv = sinf(av);
-    float cos_h_cos_v = ch * cv;
-    float sin_h_cos_v = sh * cv;
-    float cos_h_sin_v = ch * sv;
-    float sin_h_sin_v = sh * sv;
+    // Port of GS3Dp.cc per-vertex transform using float trig (angles in degrees)
+    float cos_h = cosf(s_angle_h * (M_PI/180.0f));
+    float sin_h = sinf(s_angle_h * (M_PI/180.0f));
+    float cos_v = cosf(s_angle_v * (M_PI/180.0f));
+    float sin_v = sinf(s_angle_v * (M_PI/180.0f));
+    float cos_h_cos_v = cos_h * cos_v;
+    float sin_h_cos_v = sin_h * cos_v;
+    float cos_h_sin_v = cos_h * sin_v;
+    float sin_h_sin_v = sin_h * sin_v;
     float distance = s_distance;
-    for (int i=0;i<m->vert_count;i++) {
+    for (int i = 0; i < m->vert_count; ++i) {
         float x = m->verts[i].x;
         float y = m->verts[i].y;
-        float z = m->verts[i].z; // OBJ axis swap already applied at load
+        float z = m->verts[i].z;
         float term1 = x * cos_h_cos_v;
         float term2 = y * sin_h_cos_v;
-        float term3 = z * sv;
+        float term3 = z * sin_v;
         float zo = -term1 - term2 - term3 + distance;
+        out[i].zo = zo;
         if (zo > 0.0f) {
-            float xo = -x * sh + y * ch;
-            float yo = -x * cos_h_sin_v - y * sin_h_sin_v + z * cv;
-            out[i].xo = xo; out[i].yo = yo; out[i].zo = zo;
+            float xo = -x * sin_h + y * cos_h;
+            float yo = -x * cos_h_sin_v - y * sin_h_sin_v + z * cos_v;
+            out[i].xo = xo; out[i].yo = yo;
         } else {
-            out[i].xo = 0.0f; out[i].yo = 0.0f; out[i].zo = zo;
+            out[i].xo = 0.0f; out[i].yo = 0.0f;
         }
     }
 }
@@ -85,20 +88,17 @@ static int face_depth_at_point_tri(int face_idx, float px, float py, float* dept
 
 static void calculateFaceDepths(Model* model) {
     if (!model) return;
-    // Use g_obs for observer-space coords and s_proj_* for projection scaling
     for (int i = 0; i < model->face_count; ++i) {
         Face* face = &model->faces[i]; float zmin = 1e30f, zmax = -1e30f, sum = 0.0f; int n = face->count; int minx = 999999, maxx = -999999, miny = 999999, maxy = -999999; int display_flag = 1;
         for (int k = 0; k < n; ++k) {
             int vid = face->indices[k]; if (vid < 0 || vid >= model->vert_count) continue;
             ObsVertex ov = g_obsv[vid]; float zo = ov.zo; if (zo < 0.0f) display_flag = 0; if (zo < zmin) zmin = zo; if (zo > zmax) zmax = zo; sum += zo;
-            // projected normalized coords (GS3Dp: px = xo/zo, py = yo/zo)
             float px = (ov.zo == 0.0f) ? ov.xo : (ov.xo / ov.zo);
             float py = (ov.zo == 0.0f) ? ov.yo : (ov.yo / ov.zo);
-            int sx = (int)lroundf((s_proj_cx - px) * -s_proj_scale + (s_proj_scale*0.5f)); // match projection mapping
+            int sx = (int)lroundf((s_proj_cx - px) * -s_proj_scale + (s_proj_scale*0.5f));
             int sy = (int)lroundf((s_proj_cy - py) * -s_proj_scale + (s_proj_scale*0.5f));
             if (sx < minx) minx = sx; if (sx > maxx) maxx = sx; if (sy < miny) miny = sy; if (sy > maxy) maxy = sy;
         }
-        // compute plane using first 3 vertices if visible
         if (!display_flag || n < 3) {
             face->plane_a = face->plane_b = face->plane_c = face->plane_d = 0.0f;
         } else {
@@ -119,15 +119,11 @@ static void calculateFaceDepths(Model* model) {
 
 static int pair_should_swap(Model* model, int f1, int f2) {
     Face* fA = &model->faces[f1]; Face* fB = &model->faces[f2];
-    // Test1: depth quick reject
     if (fB->z_max <= fA->z_min) return -1; if (fA->z_max <= fB->z_min) return 1;
-    // bbox quick reject using int screen bbox
     if (fA->maxx <= fB->minx || fB->maxx <= fA->minx) return -1; if (fA->maxy <= fB->miny || fB->maxy <= fA->miny) return -1;
-    // Load plane coeffs
     float a1=fA->plane_a, b1=fA->plane_b, c1=fA->plane_c, d1=fA->plane_d;
     float a2=fB->plane_a, b2=fB->plane_b, c2=fB->plane_c, d2=fB->plane_d;
     int n1 = fA->count, n2 = fB->count;
-    // Test 4: f2 same side as observer wrt plane f1 -> no swap
     float maxabs1 = fabsf(d1);
     for (int k=0;k<n2;k++) { int v = fB->indices[k]; float tv = a1*g_obsv[v].xo + b1*g_obsv[v].yo + c1*g_obsv[v].zo + d1; if (fabsf(tv) > maxabs1) maxabs1 = fabsf(tv); }
     float eps_rel1 = maxabs1 * 1e-6f; if (eps_rel1 < 0.0001f) eps_rel1 = 0.0001f; int obs1 = 0; if (d1 > eps_rel1) obs1 = 1; else if (d1 < -eps_rel1) obs1 = -1;
@@ -135,29 +131,22 @@ static int pair_should_swap(Model* model, int f1, int f2) {
         int pos=0, neg=0; for (int k=0;k<n2;k++) { int v=fB->indices[k]; float tv = a1*g_obsv[v].xo + b1*g_obsv[v].yo + c1*g_obsv[v].zo + d1; if (fabsf(tv) <= eps_rel1) ; else if (tv>0) pos++; else neg++; }
         int thr = (3*n2 + 3)/4; if ((obs1==1 && pos>=thr) || (obs1==-1 && neg>=thr)) return -1;
     }
-    // Test5: f1 opposite side wrt plane f2 -> no swap
     float maxabs2 = fabsf(d2);
     for (int k=0;k<n1;k++) { int v = fA->indices[k]; float tv = a2*g_obsv[v].xo + b2*g_obsv[v].yo + c2*g_obsv[v].zo + d2; if (fabsf(tv) > maxabs2) maxabs2 = fabsf(tv); }
     float eps_rel2 = maxabs2 * 1e-6f; if (eps_rel2 < 0.0001f) eps_rel2 = 0.0001f; int obs2=0; if (d2>eps_rel2) obs2=1; else if (d2 < -eps_rel2) obs2 = -1;
     if (obs2 != 0) { int pos2=0, neg2=0; for (int k=0;k<n1;k++){ int v=fA->indices[k]; float tv = a2*g_obsv[v].xo + b2*g_obsv[v].yo + c2*g_obsv[v].zo + d2; if (fabsf(tv) <= eps_rel2) ; else if (tv>0) pos2++; else neg2++; } int thr2=(3*n1+3)/4; if ((obs2==1 && neg2>=thr2) || (obs2==-1 && pos2>=thr2)) return -1; }
-    // Test6: f2 opposite side wrt plane f1 -> swap
     if (obs1 == 0) {
         int pos=0, neg=0; for (int k=0;k<n2;k++){ int v=fB->indices[k]; float tv=a1*g_obsv[v].xo + b1*g_obsv[v].yo + c1*g_obsv[v].zo + d1; if (fabsf(tv)<=eps_rel1) ; else if (tv>0) pos++; else neg++; } int thr=(3*n2+3)/4; if ((obs1==1 && neg>=thr) || (obs1==-1 && pos>=thr)) return 1;
     }
-    // Test7: f1 same side wrt plane f2 -> swap
     if (obs2 == 0) { int pos2=0, neg2=0; for (int k=0;k<n1;k++){ int v=fA->indices[k]; float tv=a2*g_obsv[v].xo + b2*g_obsv[v].yo + c2*g_obsv[v].zo + d2; if (fabsf(tv)<=eps_rel2) ; else if (tv>0) pos2++; else neg2++; } int thr2=(3*n1+3)/4; if ((obs2==1 && pos2>=thr2) || (obs2==-1 && neg2>=thr2)) return 1; }
     return 0;
 }
 
-// Build painter order (GS3Dp insertion-based Newell/Sancha algorithm port)
 int compute_painter_order(Model* m, int* order_out) {
     if (!m || !order_out) return 0;
     g_model = m;
     ObsVertex* obs = malloc(sizeof(ObsVertex)*m->vert_count); g_obsv = obs; compute_obs_vertices(m, obs);
-    // compute per-face depths, plane coeffs and bbox
     calculateFaceDepths(m);
-
-    // optional diagnostic dump when env var DEBUG_DUMP_FACE_EQ is set
     const char* dbg_env = getenv("DEBUG_DUMP_FACE_EQ");
     if (dbg_env && dbg_env[0]) {
         const char* tmp = getenv("TEMP"); char fn[1024]; if (tmp) snprintf(fn, sizeof(fn), "%s\\equ_windows.csv", tmp); else snprintf(fn, sizeof(fn), "equ_windows.csv");
@@ -173,49 +162,31 @@ int compute_painter_order(Model* m, int* order_out) {
             fclose(out);
         }
     }
-    // Always provide callable dump function for UI/debugging
-    // (writes to %TEMP%\equ_windows.csv)
-    if (1) {
-        // noop - function available below as dumpFaceEquationsCSV_Model
-    }
-
-    // initial stable sort by z_mean descending with tie-breaker on index
     for (int i=0;i<m->face_count;i++) order_out[i] = i;
-    // stable sort via qsort + cmp that uses z_mean desc
     qsort(order_out, m->face_count, sizeof(int), compar_face_qsort);
-
-    // insertion-based correction similar to GS3Dp
     int face_count = m->face_count;
     int swapped = 0;
-    // preallocate ordered_pairs capacity like GS3Dp
     int ordered_pairs_capacity = face_count * 4;
     typedef struct { int face1; int face2; } OrderedPair;
     OrderedPair* ordered_pairs = NULL; int ordered_pairs_count = 0;
     if (ordered_pairs_capacity > 0) ordered_pairs = (OrderedPair*)malloc(sizeof(OrderedPair) * ordered_pairs_capacity);
-
     do {
         swapped = 0;
         for (int i=0;i<face_count-1;i++) {
             int f1 = order_out[i]; int f2 = order_out[i+1];
-            // skip if ordered pair recorded
             int already_ordered = 0;
             for (int p=0;p<ordered_pairs_count;p++) { if (ordered_pairs[p].face1==f1 && ordered_pairs[p].face2==f2) { already_ordered = 1; break; } }
             if (already_ordered) continue;
-            // quick depth tests
             if (m->faces[f2].z_max <= m->faces[f1].z_min) continue;
             if (m->faces[f1].z_max <= m->faces[f2].z_min) {
-                // swap immediately
                 order_out[i] = f2; order_out[i+1] = f1; swapped = 1;
                 if (ordered_pairs && ordered_pairs_count + 1 < ordered_pairs_capacity) { ordered_pairs[ordered_pairs_count].face1 = order_out[i]; ordered_pairs[ordered_pairs_count].face2 = order_out[i+1]; ordered_pairs_count++; }
                 continue;
             }
-            // bbox coarse reject
             if (m->faces[f1].maxx <= m->faces[f2].minx || m->faces[f2].maxx <= m->faces[f1].minx) continue;
             if (m->faces[f1].maxy <= m->faces[f2].miny || m->faces[f2].maxy <= m->faces[f1].miny) continue;
-            // perform plane tests and insertion if needed
             int res = pair_should_swap(m, f1, f2);
             if (res == 1) {
-                // insertion: move f2 left as far as needed
                 int cand = order_out[i+1];
                 for (int t = i+1; t < face_count-1; t++) order_out[t] = order_out[t+1];
                 int j = i;
@@ -229,16 +200,13 @@ int compute_painter_order(Model* m, int* order_out) {
                 swapped = 1;
                 if (ordered_pairs && ordered_pairs_count + 1 < ordered_pairs_capacity) { ordered_pairs[ordered_pairs_count].face1 = order_out[j]; ordered_pairs[ordered_pairs_count].face2 = order_out[j+1]; ordered_pairs_count++; }
             }
-            // record reverse pair if capacity
             if (ordered_pairs && ordered_pairs_count + 1 < ordered_pairs_capacity) { ordered_pairs[ordered_pairs_count].face1 = f2; ordered_pairs[ordered_pairs_count].face2 = f1; ordered_pairs_count++; }
         }
     } while (swapped);
-
     if (ordered_pairs) free(ordered_pairs);
     free(obs); g_obsv = NULL; g_model = NULL; return 1;
 }
 
-// Dump face plane coefficients and depth stats to CSV (helper for Windows debug)
 void dumpFaceEquationsCSV_Model(Model* m) {
     if (!m) return;
     const char* tmp = getenv("TEMP"); char fn[1024]; if (tmp) snprintf(fn, sizeof(fn), "%s\\equ_windows.csv", tmp); else snprintf(fn, sizeof(fn), "equ_windows.csv");
