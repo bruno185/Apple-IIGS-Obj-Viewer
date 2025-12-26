@@ -180,7 +180,7 @@ int compute_painter_order(Model* m, int* order_out) {
             if (m->faces[f2].z_max <= m->faces[f1].z_min) continue;
             if (m->faces[f1].z_max <= m->faces[f2].z_min) {
                 order_out[i] = f2; order_out[i+1] = f1; swapped = 1;
-                if (ordered_pairs && ordered_pairs_count + 1 < ordered_pairs_capacity) { ordered_pairs[ordered_pairs_count].face1 = order_out[i]; ordered_pairs[ordered_pairs_count].face2 = order_out[i+1]; ordered_pairs_count++; }
+                if (ordered_pairs != NULL && ordered_pairs_count < ordered_pairs_capacity) { ordered_pairs[ordered_pairs_count].face1 = order_out[i]; ordered_pairs[ordered_pairs_count].face2 = order_out[i+1]; ordered_pairs_count++; }
                 continue;
             }
             if (m->faces[f1].maxx <= m->faces[f2].minx || m->faces[f2].maxx <= m->faces[f1].minx) continue;
@@ -193,9 +193,9 @@ int compute_painter_order(Model* m, int* order_out) {
                 order_out[i] = b;
                 order_out[i+1] = a;
                 swapped = 1;
-                if (ordered_pairs && ordered_pairs_count + 1 < ordered_pairs_capacity) { ordered_pairs[ordered_pairs_count].face1 = order_out[i]; ordered_pairs[ordered_pairs_count].face2 = order_out[i+1]; ordered_pairs_count++; }
+                if (ordered_pairs != NULL && ordered_pairs_count < ordered_pairs_capacity) { ordered_pairs[ordered_pairs_count].face1 = order_out[i]; ordered_pairs[ordered_pairs_count].face2 = order_out[i+1]; ordered_pairs_count++; }
             }
-            if (ordered_pairs && ordered_pairs_count + 1 < ordered_pairs_capacity) { ordered_pairs[ordered_pairs_count].face1 = f2; ordered_pairs[ordered_pairs_count].face2 = f1; ordered_pairs_count++; }
+            if (ordered_pairs != NULL && ordered_pairs_count < ordered_pairs_capacity) { ordered_pairs[ordered_pairs_count].face1 = f2; ordered_pairs[ordered_pairs_count].face2 = f1; ordered_pairs_count++; }
         }
     } while (swapped);
     if (ordered_pairs) free(ordered_pairs);
