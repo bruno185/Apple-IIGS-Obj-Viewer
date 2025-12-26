@@ -187,18 +187,13 @@ int compute_painter_order(Model* m, int* order_out) {
             if (m->faces[f1].maxy <= m->faces[f2].miny || m->faces[f2].maxy <= m->faces[f1].miny) continue;
             int res = pair_should_swap(m, f1, f2);
             if (res == 1) {
-                int cand = order_out[i+1];
-                for (int t = i+1; t < face_count-1; t++) order_out[t] = order_out[t+1];
-                int j = i;
-                while (j > 0) {
-                    int prev = order_out[j-1];
-                    int cmp = pair_should_swap(m, prev, cand);
-                    if (cmp == 1) j--; else break;
-                }
-                for (int t = face_count-1; t > j; t--) order_out[t] = order_out[t-1];
-                order_out[j] = cand;
+                // Simple adjacent swap (bubble step)
+                int a = order_out[i];
+                int b = order_out[i+1];
+                order_out[i] = b;
+                order_out[i+1] = a;
                 swapped = 1;
-                if (ordered_pairs && ordered_pairs_count + 1 < ordered_pairs_capacity) { ordered_pairs[ordered_pairs_count].face1 = order_out[j]; ordered_pairs[ordered_pairs_count].face2 = order_out[j+1]; ordered_pairs_count++; }
+                if (ordered_pairs && ordered_pairs_count + 1 < ordered_pairs_capacity) { ordered_pairs[ordered_pairs_count].face1 = order_out[i]; ordered_pairs[ordered_pairs_count].face2 = order_out[i+1]; ordered_pairs_count++; }
             }
             if (ordered_pairs && ordered_pairs_count + 1 < ordered_pairs_capacity) { ordered_pairs[ordered_pairs_count].face1 = f2; ordered_pairs[ordered_pairs_count].face2 = f1; ordered_pairs_count++; }
         }

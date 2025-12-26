@@ -1059,35 +1059,22 @@ void painter_newell_sancha(Model3D* model, int face_count) {
 
             do_swap: {
 
-                // Perform insertion: move faces->sorted_face_indices[i+1] (cand) left as far as needed
-                int cand = faces->sorted_face_indices[i+1];
-                if (ENABLE_DEBUG_SAVE) printf("Insertion for candidate face %d at index %d\n", cand, i+1);
-                // remove cand from i+1
-                int t;
-                for (t = i+1; t < face_count-1; t++) faces->sorted_face_indices[t] = faces->sorted_face_indices[t+1];
-                // find insertion point j (scan left)
-                int j = i;
-                while (j > 0) {
-                    int prev = faces->sorted_face_indices[j-1];
-                    int cmp = pair_should_swap(faces, vtx, prev, cand);
-                    if (cmp == 1) {
-                        // cand should be before prev -> move left
-                        j--;
-                    } else {
-                        break;
-                    }
-                }
-                // shift right to make room
-                for (t = face_count-1; t > j; t--) faces->sorted_face_indices[t] = faces->sorted_face_indices[t-1];
-                faces->sorted_face_indices[j] = cand;
+                // Perform a simple adjacent swap (bubble step) between i and i+1
+                int a = faces->sorted_face_indices[i];
+                int b = faces->sorted_face_indices[i+1];
+                if (ENABLE_DEBUG_SAVE) printf("Swap candidate faces %d and %d at indices %d and %d\n", b, a, i, i+1);
+                faces->sorted_face_indices[i]   = b;
+                faces->sorted_face_indices[i+1] = a;
                 swapped = 1;
                 swap_count++;
 
-                // Record an ordered pair if capacity exists: cand is now before face at j+1
+                // Record an ordered pair if capacity exists: b is now before a
                 if (ordered_pairs != NULL && ordered_pairs_count + 1 < ordered_pairs_capacity) {
-                    ordered_pairs[ordered_pairs_count].face1 = faces->sorted_face_indices[j];
-                    ordered_pairs[ordered_pairs_count].face2 = faces->sorted_face_indices[j+1];
+                    ordered_pairs[ordered_pairs_count].face1 = faces->sorted_face_indices[i];
+                    ordered_pairs[ordered_pairs_count].face2 = faces->sorted_face_indices[i+1];
                     ordered_pairs_count++;
+                }
+            }
                 }
             }
 
