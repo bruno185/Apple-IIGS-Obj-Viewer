@@ -117,30 +117,7 @@ static void calculateFaceDepths(Model* model) {
     }
 }
 
-static int pair_should_swap(Model* model, int f1, int f2) {
-    Face* fA = &model->faces[f1]; Face* fB = &model->faces[f2];
-    if (fB->z_max <= fA->z_min) return -1; if (fA->z_max <= fB->z_min) return 1;
-    if (fA->maxx <= fB->minx || fB->maxx <= fA->minx) return -1; if (fA->maxy <= fB->miny || fB->maxy <= fA->miny) return -1;
-    float a1=fA->plane_a, b1=fA->plane_b, c1=fA->plane_c, d1=fA->plane_d;
-    float a2=fB->plane_a, b2=fB->plane_b, c2=fB->plane_c, d2=fB->plane_d;
-    int n1 = fA->count, n2 = fB->count;
-    float maxabs1 = fabsf(d1);
-    for (int k=0;k<n2;k++) { int v = fB->indices[k]; float tv = a1*g_obsv[v].xo + b1*g_obsv[v].yo + c1*g_obsv[v].zo + d1; if (fabsf(tv) > maxabs1) maxabs1 = fabsf(tv); }
-    float eps_rel1 = maxabs1 * 1e-6f; if (eps_rel1 < 0.0001f) eps_rel1 = 0.0001f; int obs1 = 0; if (d1 > eps_rel1) obs1 = 1; else if (d1 < -eps_rel1) obs1 = -1;
-    if (obs1 != 0) {
-        int pos=0, neg=0; for (int k=0;k<n2;k++) { int v=fB->indices[k]; float tv = a1*g_obsv[v].xo + b1*g_obsv[v].yo + c1*g_obsv[v].zo + d1; if (fabsf(tv) <= eps_rel1) ; else if (tv>0) pos++; else neg++; }
-        int thr = (3*n2 + 3)/4; if ((obs1==1 && pos>=thr) || (obs1==-1 && neg>=thr)) return -1;
-    }
-    float maxabs2 = fabsf(d2);
-    for (int k=0;k<n1;k++) { int v = fA->indices[k]; float tv = a2*g_obsv[v].xo + b2*g_obsv[v].yo + c2*g_obsv[v].zo + d2; if (fabsf(tv) > maxabs2) maxabs2 = fabsf(tv); }
-    float eps_rel2 = maxabs2 * 1e-6f; if (eps_rel2 < 0.0001f) eps_rel2 = 0.0001f; int obs2=0; if (d2>eps_rel2) obs2=1; else if (d2 < -eps_rel2) obs2 = -1;
-    if (obs2 != 0) { int pos2=0, neg2=0; for (int k=0;k<n1;k++){ int v=fA->indices[k]; float tv = a2*g_obsv[v].xo + b2*g_obsv[v].yo + c2*g_obsv[v].zo + d2; if (fabsf(tv) <= eps_rel2) ; else if (tv>0) pos2++; else neg2++; } int thr2=(3*n1+3)/4; if ((obs2==1 && neg2>=thr2) || (obs2==-1 && pos2>=thr2)) return -1; }
-    if (obs1 == 0) {
-        int pos=0, neg=0; for (int k=0;k<n2;k++){ int v=fB->indices[k]; float tv=a1*g_obsv[v].xo + b1*g_obsv[v].yo + c1*g_obsv[v].zo + d1; if (fabsf(tv)<=eps_rel1) ; else if (tv>0) pos++; else neg++; } int thr=(3*n2+3)/4; if ((obs1==1 && neg>=thr) || (obs1==-1 && pos>=thr)) return 1;
-    }
-    if (obs2 == 0) { int pos2=0, neg2=0; for (int k=0;k<n1;k++){ int v=fA->indices[k]; float tv=a2*g_obsv[v].xo + b2*g_obsv[v].yo + c2*g_obsv[v].zo + d2; if (fabsf(tv)<=eps_rel2) ; else if (tv>0) pos2++; else neg2++; } int thr2=(3*n1+3)/4; if ((obs2==1 && pos2>=thr2) || (obs2==-1 && neg2>=thr2)) return 1; }
-    return 0;
-}
+/* pair_should_swap removed — tests inlined into compute_painter_order to match GS3Dp.cc semantics and avoid duplicated logic */
 
 int compute_painter_order(Model* m, int* order_out) {
     if (!m || !order_out) return 0;
