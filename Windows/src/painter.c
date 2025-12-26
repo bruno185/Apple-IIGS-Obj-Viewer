@@ -185,17 +185,221 @@ int compute_painter_order(Model* m, int* order_out) {
             }
             if (m->faces[f1].maxx <= m->faces[f2].minx || m->faces[f2].maxx <= m->faces[f1].minx) continue;
             if (m->faces[f1].maxy <= m->faces[f2].miny || m->faces[f2].maxy <= m->faces[f1].miny) continue;
-            int res = pair_should_swap(m, f1, f2);
-            if (res == 1) {
-                // Simple adjacent swap (bubble step)
+            // Tests ported from GS3Dp.cc (Tests 4..7). If any test decides a swap is needed, perform adjacent swap and record ordered pair.
+            {
+                // Prepare plane coeffs and counts
+                float a1 = m->faces[f1].plane_a;
+                float b1 = m->faces[f1].plane_b;
+                float c1 = m->faces[f1].plane_c;
+                float d1 = m->faces[f1].plane_d;
+
+                float a2 = m->faces[f2].plane_a;
+                float b2 = m->faces[f2].plane_b;
+                float c2 = m->faces[f2].plane_c;
+                float d2 = m->faces[f2].plane_d;
+
+                int n1 = m->faces[f1].count;
+                int n2 = m->faces[f2].count;
+
+                // Test 4: f2 same side as observer wrt plane f1 -> ordered (no swap)
+                float maxabs = fabsf(d1);
+                for (int kk = 0; kk < n2; kk++) {
+                    int v = m->faces[f2].indices[kk];
+                    float tv = a1 * g_obsv[v].xo + b1 * g_obsv[v].yo + c1 * g_obsv[v].zo + d1;
+                    if (fabsf(tv) > maxabs) {
+                        maxabs = fabsf(tv);
+                    }
+                }
+
+                float eps_rel_f = maxabs * 1e-6f;
+                if (eps_rel_f < 0.0001f) {
+                    eps_rel_f = 0.0001f;
+                }
+
+                int obs_side1 = 0;
+                if (d1 > eps_rel_f) {
+                    obs_side1 = 1;
+                } else if (d1 < -eps_rel_f) {
+                    obs_side1 = -1;
+                } else {
+                    goto skipT4;
+                }
+
+                int pos = 0;
+                int neg = 0;
+                int zero = 0;
+                for (int kk = 0; kk < n2; kk++) {
+                    int v = m->faces[f2].indices[kk];
+                    float tv = a1 * g_obsv[v].xo + b1 * g_obsv[v].yo + c1 * g_obsv[v].zo + d1;
+                    if (fabsf(tv) <= eps_rel_f) {
+                        zero++;
+                    } else if (tv > 0) {
+                        pos++;
+                    } else {
+                        neg++;
+                    }
+                }
+
+                int thr = (3 * n2 + 3) / 4;
+                if ((obs_side1 == 1 && pos >= thr) || (obs_side1 == -1 && neg >= thr)) {
+                    /* ordered correctly */
+                    continue;
+                }
+            skipT4: ;
+
+                // Test 5: f1 opposite side wrt plane f2 -> ordered (no swap)
+                float maxabs2 = fabsf(d2);
+                for (int kk = 0; kk < n1; kk++) {
+                    int v = m->faces[f1].indices[kk];
+                    float tv = a2 * g_obsv[v].xo + b2 * g_obsv[v].yo + c2 * g_obsv[v].zo + d2;
+                    if (fabsf(tv) > maxabs2) {
+                        maxabs2 = fabsf(tv);
+                    }
+                }
+
+                float eps_rel2 = maxabs2 * 1e-6f;
+                if (eps_rel2 < 0.0001f) {
+                    eps_rel2 = 0.0001f;
+                }
+
+                int obs_side2 = 0;
+                if (d2 > eps_rel2) {
+                    obs_side2 = 1;
+                } else if (d2 < -eps_rel2) {
+                    obs_side2 = -1;
+                } else {
+                    goto skipT5;
+                }
+
+                int pos2 = 0;
+                int neg2 = 0;
+                int zero2 = 0;
+                for (int kk = 0; kk < n1; kk++) {
+                    int v = m->faces[f1].indices[kk];
+                    float tv = a2 * g_obsv[v].xo + b2 * g_obsv[v].yo + c2 * g_obsv[v].zo + d2;
+                    if (fabsf(tv) <= eps_rel2) {
+                        zero2++;
+                    } else if (tv > 0) {
+                        pos2++;
+                    } else {
+                        neg2++;
+                    }
+                }
+
+                int thr2 = (3 * n1 + 3) / 4;
+                if ((obs_side2 == 1 && neg2 >= thr2) || (obs_side2 == -1 && pos2 >= thr2)) {
+                    /* ordered correctly */
+                    continue;
+                }
+            skipT5: ;
+
+                // Test 6: f2 opposite side wrt plane f1 -> swap
+                float maxabs6 = fabsf(d1);
+                for (int kk = 0; kk < n2; kk++) {
+                    int v = m->faces[f2].indices[kk];
+                    float tv = a1 * g_obsv[v].xo + b1 * g_obsv[v].yo + c1 * g_obsv[v].zo + d1;
+                    if (fabsf(tv) > maxabs6) {
+                        maxabs6 = fabsf(tv);
+                    }
+                }
+
+                float eps_rel6 = maxabs6 * 1e-6f;
+                if (eps_rel6 < 0.0001f) {
+                    eps_rel6 = 0.0001f;
+                }
+
+                obs_side1 = 0;
+                if (d1 > eps_rel6) {
+                    obs_side1 = 1;
+                } else if (d1 < -eps_rel6) {
+                    obs_side1 = -1;
+                } else {
+                    goto skipT6;
+                }
+
+                int pos6 = 0;
+                int neg6 = 0;
+                int zero6 = 0;
+                for (int kk = 0; kk < n2; kk++) {
+                    int v = m->faces[f2].indices[kk];
+                    float tv = a1 * g_obsv[v].xo + b1 * g_obsv[v].yo + c1 * g_obsv[v].zo + d1;
+                    if (fabsf(tv) <= eps_rel6) {
+                        zero6++;
+                    } else if (tv > 0) {
+                        pos6++;
+                    } else {
+                        neg6++;
+                    }
+                }
+
+                int thr6 = (3 * n2 + 3) / 4;
+                if ((obs_side1 == 1 && neg6 >= thr6) || (obs_side1 == -1 && pos6 >= thr6)) {
+                    goto do_swap;
+                }
+            skipT6: ;
+
+                // Test 7: f1 same side wrt plane f2 -> swap
+                float maxabs7 = fabsf(d2);
+                for (int kk = 0; kk < n1; kk++) {
+                    int v = m->faces[f1].indices[kk];
+                    float tv = a2 * g_obsv[v].xo + b2 * g_obsv[v].yo + c2 * g_obsv[v].zo + d2;
+                    if (fabsf(tv) > maxabs7) {
+                        maxabs7 = fabsf(tv);
+                    }
+                }
+
+                float eps_rel7 = maxabs7 * 1e-6f;
+                if (eps_rel7 < 0.0001f) {
+                    eps_rel7 = 0.0001f;
+                }
+
+                obs_side2 = 0;
+                if (d2 > eps_rel7) {
+                    obs_side2 = 1;
+                } else if (d2 < -eps_rel7) {
+                    obs_side2 = -1;
+                } else {
+                    goto skipT7;
+                }
+
+                int pos7 = 0;
+                int neg7 = 0;
+                int zero7 = 0;
+                for (int kk = 0; kk < n1; kk++) {
+                    int v = m->faces[f1].indices[kk];
+                    float tv = a2 * g_obsv[v].xo + b2 * g_obsv[v].yo + c2 * g_obsv[v].zo + d2;
+                    if (fabsf(tv) <= eps_rel7) {
+                        zero7++;
+                    } else if (tv > 0) {
+                        pos7++;
+                    } else {
+                        neg7++;
+                    }
+                }
+
+                int thr7 = (3 * n1 + 3) / 4;
+                if ((obs_side2 == 1 && pos7 >= thr7) || (obs_side2 == -1 && neg7 >= thr7)) {
+                    goto do_swap;
+                } else {
+                    /* inconclusive */
+                    goto skipT7;
+                }
+
+            do_swap: {
                 int a = order_out[i];
                 int b = order_out[i+1];
                 order_out[i] = b;
                 order_out[i+1] = a;
                 swapped = 1;
-                if (ordered_pairs != NULL && ordered_pairs_count < ordered_pairs_capacity) { ordered_pairs[ordered_pairs_count].face1 = order_out[i]; ordered_pairs[ordered_pairs_count].face2 = order_out[i+1]; ordered_pairs_count++; }
+                if (ordered_pairs != NULL && ordered_pairs_count < ordered_pairs_capacity) {
+                    ordered_pairs[ordered_pairs_count].face1 = order_out[i];
+                    ordered_pairs[ordered_pairs_count].face2 = order_out[i+1];
+                    ordered_pairs_count++;
+                }
             }
-            if (ordered_pairs != NULL && ordered_pairs_count < ordered_pairs_capacity) { ordered_pairs[ordered_pairs_count].face1 = f2; ordered_pairs[ordered_pairs_count].face2 = f1; ordered_pairs_count++; }
+            skipT7: ;
+            }
+
         }
     } while (swapped);
     if (ordered_pairs) free(ordered_pairs);
