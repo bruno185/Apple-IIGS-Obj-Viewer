@@ -497,7 +497,9 @@ typedef struct {
  *   v 1.234 5.678 9.012
  *   v -2.5 0.0 3.14
  */
-int readVertices(const char* filename, VertexArrays3D* vtx, int max_vertices);
+int readVertices(const char* filename, VertexArrays3D* vtx, int max_vertices, Model3D* owner, int center_after);
+// Center vertices (subtract centroid). If out_cx/out_cy/out_cz != NULL, return centroid in fixed-point.
+void centerVertices(VertexArrays3D* vtx, int vcount, Fixed32* out_cx, Fixed32* out_cy, Fixed32* out_cz);
 
 /**
  * readFaces
@@ -1422,7 +1424,8 @@ int loadModel3D(Model3D* model, const char* filename) {
     // --- MAJ du compteur global pour la vérification des indices de faces ---
     readVertices_last_count = model->vertices.vertex_count;
     
-    int vcount = readVertices(filename, &model->vertices, MAX_VERTICES);
+    // By default we do not center on read; pass owner pointer and center_after=0
+    int vcount = readVertices(filename, &model->vertices, MAX_VERTICES, model, 0);
     if (vcount < 0) {
         return -1;  // Critical failure: unable to read vertices
     }
@@ -1822,7 +1825,7 @@ void processModelWireframe(Model3D* model, ObserverParams* params, const char* f
  * - Array overflow protection
  * - Coordinate format validation
  */
-int readVertices(const char* filename, VertexArrays3D* vtx, int max_vertices) {
+int readVertices(const char* filename, VertexArrays3D* vtx, int max_vertices, Model3D* owner, int center_after) {
     FILE *file;
     char line[MAX_LINE_LENGTH];
     int line_number = 1;
@@ -1868,6 +1871,21 @@ int readVertices(const char* filename, VertexArrays3D* vtx, int max_vertices) {
     // Close file
     fclose(file);
     
+    // helper: centerVertices declared below
+    
+    // Optionally center the object around the origin
+    if (center_after && vertex_count > 0) {
+        Fixed32 cx=0, cy=0, cz=0;
+        centerVertices(vtx, vertex_count, &cx, &cy, &cz);
+        printf("[INFO] readVertices: centered object around centroid (cx=%.4f cy=%.4f cz=%.4f)\n", FIXED_TO_FLOAT(cx), FIXED_TO_FLOAT(cy), FIXED_TO_FLOAT(cz));
+        if (owner) {
+            owner->auto_centered = 1;
+            owner->auto_center_x = cx;
+            owner->auto_center_y = cy;
+            owner->auto_center_z = cz;
+        }
+    }
+
     // printf("\n\nAnalyse terminee. %d lignes lues.\n", line_number - 1);
     return vertex_count;  // Return the number of vertices read
 }
@@ -1988,6 +2006,32 @@ int readFaces_model(const char* filename, Model3D* model) {
 }
 
 // Function to project 3D coordinates onto 2D screen - FIXED POINT VERSION
+
+// Center the vertex arrays by subtracting centroid (computed in float, applied in Fixed32).
+// If out_cx/out_cy/out_cz are non-NULL, they receive the centroid values in Fixed32.
+void centerVertices(VertexArrays3D* vtx, int vcount, Fixed32* out_cx, Fixed32* out_cy, Fixed32* out_cz) {
+    if (!vtx || vcount <= 0) return;
+    double cx = 0.0, cy = 0.0, cz = 0.0;
+    for (int i = 0; i < vcount; ++i) {
+        cx += FIXED_TO_FLOAT(vtx->x[i]);
+        cy += FIXED_TO_FLOAT(vtx->y[i]);
+        cz += FIXED_TO_FLOAT(vtx->z[i]);
+    }
+    cx /= (double)vcount; cy /= (double)vcount; cz /= (double)vcount;
+    Fixed32 cxf = FLOAT_TO_FIXED((float)cx);
+    Fixed32 cyf = FLOAT_TO_FIXED((float)cy);
+    Fixed32 czf = FLOAT_TO_FIXED((float)cz);
+    // Subtract centroid (in fixed-point) from each vertex
+    for (int i = 0; i < vcount; ++i) {
+        vtx->x[i] = FIXED_SUB(vtx->x[i], cxf);
+        vtx->y[i] = FIXED_SUB(vtx->y[i], cyf);
+        vtx->z[i] = FIXED_SUB(vtx->z[i], czf);
+    }
+    if (out_cx) *out_cx = cxf;
+    if (out_cy) *out_cy = cyf;
+    if (out_cz) *out_cz = czf;
+}
+
 void projectTo2D(VertexArrays3D* vtx, int angle_w_deg) {
     int i;
     Fixed32 cos_w, sin_w;
