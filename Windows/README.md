@@ -39,21 +39,29 @@ Windows\build_vs\bin\Release\viewer_win32.exe <path-to-obj> [--angle_h <deg>] [-
 Windows\build_vs\bin\Release\viewer_win32.exe q1.obj
 ```
 
-MinGW: there is no maintained `build_mingw.ps1` in this repository; if you need a MinGW build, generate MinGW Makefiles with CMake and build them manually (see `cmake -G "MinGW Makefiles"`).
-
-Smoke test
-----------
-- Use `Windows\smoke_test.ps1` to run a simple startup test; it checks that logs are written to `%TEMP%\viewer_win32.log` and that the viewer starts successfully.
+MinGW: MinGW builds are not maintained or tested in this repository — **use MSVC** via `Windows\build_msvc.ps1` for recommended builds. If absolutely necessary, you can generate MinGW Makefiles manually with CMake (for example: `cmake -S Windows -B Windows/build_mingw -G "MinGW Makefiles" && cmake --build Windows/build_mingw --config Release`), but this path is unsupported.
 
 Notes
 -----
-- Logs and runtime diagnostics are written to `%TEMP%\viewer_win32.log`.
+- Logs and runtime diagnostics are written to `%TEMP%\viewer_win32.log`. 
 - The Windows target `viewer_win32` is a GDI-based native viewer and is the primary Windows target.
 - If you prefer to open the generated solution, use VS "Open Project/Solution" on `Windows/build_vs\GS3DpViewer.sln` (after configuring with CMake).
 
 Smoke test
 ----------
-Run `.uild_mingw.ps1` (or `.uild_msvc.ps1`) and then `.\nsmoke_test.ps1` to verify the executable starts and writes diagnostic logs to `%TEMP%\viewer_win32.log`.
+- Build with the recommended MSVC script:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "Windows\build_msvc.ps1"
+```
+
+- Then run the smoke test:
+
+```powershell
+.\Windows\smoke_test.ps1
+```
+
+This checks that the viewer starts and writes logs to `%TEMP%\viewer_win32.log`.
 
 Notes
 -----
