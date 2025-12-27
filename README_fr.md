@@ -34,7 +34,7 @@ Ce projet lit des fichiers OBJ simplifiés (sommets `v` et faces `f`), effectue 
 ## Remarques sur l'implémentation
 - Les calculs critiques sont optimisés pour limiter les conversions flottantes et éviter les débordements (usage intensif de `Fixed32` et `Fixed64`).
 - Un correctif d'orientation pour les exports OBJ Z-up a été ajouté (swap Y/Z à l'import) et peut être réverti manuellement.
-- L'auto‑fit utilise désormais une **sphère englobante** précomputée (centroïde + rayon) pour estimer la distance en **O(1)** via `computeDistanceFromBoundingSphere()` ; `computeDistanceToFit()` (scan par sommet) est conservée mais **dépréciée** en tant que solution de secours.
+- L'auto‑fit et l'estimation automatique de distance ont été désactivés ; la distance d'observation est fournie par l'utilisateur.
 
 ## Fonctions importantes & références fichier:ligne
 
@@ -44,7 +44,6 @@ Ce projet lit des fichiers OBJ simplifiés (sommets `v` et faces `f`), effectue 
 - 🔧 `void destroyModel3D(Model3D* model)` — `GS3Dp.cc:1245`
 - 🔧 `int loadModel3D(Model3D* model, const char* filename)` — `GS3Dp.cc:1306`
 - 🔧 `void computeModelBoundingSphere(Model3D* model)` — `GS3Dp.cc:563`
-- 🔧 `Fixed32 computeDistanceFromBoundingSphere(Model3D* model, float margin)` — `GS3Dp.cc:564`
 - 🔧 `void getObserverParams(ObserverParams* params, Model3D* model)` — `GS3Dp.cc:574`
 - 🔧 `void processModelFast(Model3D* model, ObserverParams* params, const char* filename)` — `GS3Dp.cc:1498`
 - 🔧 `void processModelWireframe(Model3D* model, ObserverParams* params, const char* filename)` — `GS3Dp.cc:1603`
@@ -52,7 +51,6 @@ Ce projet lit des fichiers OBJ simplifiés (sommets `v` et faces `f`), effectue 
 - 🔧 `int readFaces_model(const char* filename, Model3D* model)` — `GS3Dp.cc:1760`
 - 🔧 `void projectTo2D(VertexArrays3D* vtx, int angle_w_deg)` — `GS3Dp.cc:560`
 - 🔧 `void calculateFaceDepths(Model3D* model, Face3D* faces, int face_count)` — `GS3Dp.cc:628`
-- 🔧 `Fixed32 computeDistanceToFit(VertexArrays3D* vtx, float margin)` — `GS3Dp.cc:573`
 - 🔧 `void autoScaleModel(Model3D* model, float target_max_dim, float min_scale, float max_scale, int center_flag)` — `GS3Dp.cc:577`
 - 🔧 `void revertAutoScaleModel(Model3D* model)` — `GS3Dp.cc:578`
 - 🔧 `void backupModelCoords(Model3D* model)` — `GS3Dp.cc:588`

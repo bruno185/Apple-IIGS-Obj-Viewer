@@ -15,7 +15,7 @@
 #define ID_FILE_QUIT  1002
 #define ID_3D_PARAMS  2001
 
-static Model* g_model = NULL; static float s_ah = 30.0f, s_av = 20.0f, s_aw = 0.0f, s_dist = 300.0f; // angle_h, angle_v, angle_w, distance (match GS3Dp defaults)
+static Model* g_model = NULL; static float s_ah = 30.0f, s_av = 20.0f, s_aw = 0.0f, s_dist = 300.0f; static float s_proj_scale = 100.0f; // angle_h, angle_v, angle_w, distance and projection scale (pixels per unit)
 static int s_dump_on_load = 0; // if set, dump face equations CSV after async model load
 static ObsVertex* g_obs = NULL;
 static int* g_order = NULL;
@@ -25,6 +25,7 @@ static int g_wireframe = 0;
 static void on_file_open(HWND hwnd);
 static void on_show_params(HWND hwnd);
 static void load_model_from_path(HWND hwnd, const char* path);
+static void render_frame(HWND hwnd);
 
 // Async loader hooks (WM_APP messages and helper types)
 #define WM_MODEL_LOADED (WM_APP + 1)
@@ -51,12 +52,56 @@ static void compute_projection_and_order(HWND hwnd, int* out_winw, int* out_winh
     float pxmin=1e30f, pxmax=-1e30f, pymin=1e30f, pymax=-1e30f;
     for (int i=0;i<g_model->vert_count;i++) {
         ObsVertex ov = g_obs[i]; if (ov.zo == 0.0f) continue; float px = ov.xo/ov.zo; float py = ov.yo/ov.zo; if (px<pxmin) pxmin=px; if (px>pxmax) pxmax=px; if (py<pymin) pymin=py; if (py>pymax) pymax=py; }
-    float cx = (pxmin + pxmax) * 0.5f; float cy = (pymin + pymax) * 0.5f; float sdx = (pxmax - pxmin); float sdy = (pymax - pymin); float scale = 200.0f; if (sdx>1e-6f && sdy>1e-6f) { float sx = (winw*0.8f) / sdx; float sy = (winh*0.8f) / sdy; scale = fminf(sx, sy); }
+
+    // Match GS3Dp behavior: model-space centering applied at load.
+    // Use projected-space center (0,0) and user-controlled projection scale (s_proj_scale). Distance modifies perspective only; projection scale controls display size.
+    float cx = 0.0f;
+    float cy = 0.0f;
+    float scale = s_proj_scale; // user-controlled projection scale
+
     *out_cx = cx; *out_cy = cy; *out_scale = scale; *out_pxmin = pxmin; *out_pxmax = pxmax; *out_pymin = pymin; *out_pymax = pymax;
     // inform painter module of projection params (so it can compute per-face 2D bbox like GS3Dp)
     extern void set_projection_params(float cx, float cy, float scale);
     set_projection_params(cx, cy, scale);
     compute_painter_order(g_model, g_order);
+}
+
+// Apply the simple auto-fit algorithm: distance = 3 * max_dim, then compute projection scale so projected model fits the window
+static void apply_auto_fit(HWND hwnd, Model* m, ObsVertex* obs) {
+    if (!m || !obs) return;
+    // compute bbox dimensions in model space
+    float minx = 1e30f, maxx = -1e30f, miny = 1e30f, maxy = -1e30f, minz = 1e30f, maxz = -1e30f;
+    for (int i = 0; i < m->vert_count; ++i) {
+        float vx = m->verts[i].x, vy = m->verts[i].y, vz = m->verts[i].z;
+        if (vx < minx) minx = vx; if (vx > maxx) maxx = vx;
+        if (vy < miny) miny = vy; if (vy > maxy) maxy = vy;
+        if (vz < minz) minz = vz; if (vz > maxz) maxz = vz;
+    }
+    float dx = maxx - minx; float dy = maxy - miny; float dz = maxz - minz; float max_dim = dx; if (dy > max_dim) max_dim = dy; if (dz > max_dim) max_dim = dz;
+
+    // set distance to 3 * max_dim
+    s_dist = 3.0f * max_dim;
+    set_observer_params(s_ah, s_av, s_aw, s_dist);
+    compute_obs_vertices(m, obs);
+
+    // compute projected bounds
+    float pxmin = 1e30f, pxmax = -1e30f, pymin = 1e30f, pymax = -1e30f;
+    for (int i = 0; i < m->vert_count; ++i) {
+        ObsVertex v = obs[i]; if (v.zo == 0.0f) continue;
+        float px = v.xo / v.zo; float py = v.yo / v.zo; if (px < pxmin) pxmin = px; if (px > pxmax) pxmax = px; if (py < pymin) pymin = py; if (py > pymax) pymax = py;
+    }
+
+    RECT rc; GetClientRect(hwnd, &rc); int winw = rc.right - rc.left; int winh = rc.bottom - rc.top;
+    float margin = 0.9f;
+    float s1 = (winw * margin) / (pxmax - pxmin);
+    float s2 = (winh * margin) / (pymax - pymin);
+    s_proj_scale = (s1 < s2) ? s1 : s2;
+
+    extern void set_projection_params(float cx, float cy, float scale);
+    set_projection_params(0.0f, 0.0f, s_proj_scale);
+    if (g_model && g_order) compute_painter_order(g_model, g_order);
+    InvalidateRect(hwnd, NULL, TRUE);
+    render_frame(hwnd);
 }
 
 static void project_to_screen(float px, float py, int winw, int winh, float scale, float cx, float cy, POINT* out) {
@@ -116,9 +161,13 @@ static void render_frame(HWND hwnd) {
 
     // diagnostics: write projection bbox/scale and sample vertices to log
     {
-        const char* tmp = getenv("TEMP"); char logfn[1024]; if (tmp) snprintf(logfn, sizeof(logfn), "%s\\viewer_win32.log", tmp); else snprintf(logfn, sizeof(logfn), "viewer_win32.log"); FILE* lf = fopen(logfn, "a"); if (lf) {
-            fprintf(lf, "PROJ: cx=%.6f cy=%.6f pxmin=%.6f pxmax=%.6f pymin=%.6f pymax=%.6f scale=%.6f win=%d,%d\n", cx, cy, pxmin, pxmax, pymin, pymax, scale, winw, winh);
-            int n = (g_model->vert_count<6)?g_model->vert_count:6; for (int i=0;i<n;i++) {
+        const char* tmp = getenv("TEMP"); char logfn[1024];
+        if (tmp) snprintf(logfn, sizeof(logfn), "%s\\viewer_win32.log", tmp); else snprintf(logfn, sizeof(logfn), "viewer_win32.log");
+        FILE* lf = fopen(logfn, "a");
+        if (lf) {
+            fprintf(lf, "PROJ: cx=%.6f cy=%.6f pxmin=%.6f pxmax=%.6f pymin=%.6f pymax=%.6f scale=%.6f proj_scale=%.6f dist=%.6f win=%d,%d\n", cx, cy, pxmin, pxmax, pymin, pymax, scale, s_proj_scale, s_dist, winw, winh);
+            int n = (g_model->vert_count<6)?g_model->vert_count:6;
+            for (int i=0;i<n;i++) {
                 ObsVertex v = g_obs[i]; float px = (v.zo==0.0f)?v.xo:(v.xo/v.zo); float py = (v.zo==0.0f)?v.yo:(v.yo/v.zo); fprintf(lf, "VERT[%d] xo=%.6f yo=%.6f zo=%.6f px=%.6f py=%.6f\n", i, v.xo, v.yo, v.zo, px, py);
             }
             fclose(lf);
@@ -211,6 +260,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             if (changed) {
                 // keep angles modulo 360
                 s_ah = normalize_angle360(s_ah); s_av = normalize_angle360(s_av); s_aw = normalize_angle360(s_aw);
+                // apply distance (no distance-scale)
                 set_observer_params(s_ah, s_av, s_aw, s_dist);
                 if (g_model && g_obs) {
                     compute_obs_vertices(g_model, g_obs);
@@ -241,6 +291,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             if (g_order) { free(g_order); g_order = NULL; }
             g_model = res->m; g_order = res->order; g_obs = malloc(sizeof(ObsVertex) * g_model->vert_count);
             set_observer_params(s_ah, s_av, s_aw, s_dist); compute_obs_vertices(g_model, g_obs);
+            // apply brute auto-fit: distance = 3 * max_dim; projection scale computed to fit window
+            apply_auto_fit(hwnd, g_model, g_obs);
             // log and redraw
             const char* tmp = getenv("TEMP"); char logfn[1024]; if (tmp) snprintf(logfn, sizeof(logfn), "%s\\viewer_win32.log", tmp); else snprintf(logfn, sizeof(logfn), "viewer_win32.log"); FILE* lf = fopen(logfn, "a"); if (lf) { fprintf(lf, "ASYNC LOAD: Loaded model verts=%d faces=%d\n", g_model->vert_count, g_model->face_count); fclose(lf); }
             InvalidateRect(hwnd, NULL, TRUE);
@@ -427,6 +479,8 @@ static void load_model_from_path(HWND hwnd, const char* path) {
     set_observer_params(s_ah, s_av, s_aw, s_dist);
     compute_obs_vertices(g_model, g_obs);
     compute_painter_order(g_model, g_order);
+    // apply brute auto-fit after load
+    apply_auto_fit(hwnd, g_model, g_obs);
     InvalidateRect(hwnd, NULL, TRUE);
 }
 
@@ -560,16 +614,21 @@ static void on_file_open(HWND hwnd) {
 static LRESULT CALLBACK ParamsWndProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lParam) {
     static HWND hEditAH, hEditAV, hEditAW, hEditDist;
     if (msg == WM_CREATE) {
-        wchar_t buf[64]; swprintf(buf, 64, L"%.0f", s_ah); hEditAH = CreateWindowExW(0, L"EDIT", buf, WS_CHILD|WS_VISIBLE|WS_BORDER|ES_LEFT, 120,20,140,22,dlg,(HMENU)101,GetModuleHandle(NULL),NULL);
-        swprintf(buf, 64, L"%.0f", s_av); hEditAV = CreateWindowExW(0, L"EDIT", buf, WS_CHILD|WS_VISIBLE|WS_BORDER|ES_LEFT, 120,55,140,22,dlg,(HMENU)102,GetModuleHandle(NULL),NULL);
-        swprintf(buf, 64, L"%.0f", s_aw); hEditAW = CreateWindowExW(0, L"EDIT", buf, WS_CHILD|WS_VISIBLE|WS_BORDER|ES_LEFT, 120,90,140,22,dlg,(HMENU)103,GetModuleHandle(NULL),NULL);
-        swprintf(buf, 64, L"%.3f", s_dist); hEditDist = CreateWindowExW(0, L"EDIT", buf, WS_CHILD|WS_VISIBLE|WS_BORDER|ES_LEFT, 120,125,140,22,dlg,(HMENU)104,GetModuleHandle(NULL),NULL);
-        CreateWindowExW(0, L"STATIC", L"Angle H:", WS_CHILD|WS_VISIBLE, 20,20,90,22,dlg,NULL,GetModuleHandle(NULL),NULL);
-        CreateWindowExW(0, L"STATIC", L"Angle V:", WS_CHILD|WS_VISIBLE, 20,55,90,22,dlg,NULL,GetModuleHandle(NULL),NULL);
-        CreateWindowExW(0, L"STATIC", L"Angle W:", WS_CHILD|WS_VISIBLE, 20,90,90,22,dlg,NULL,GetModuleHandle(NULL),NULL);
-        CreateWindowExW(0, L"STATIC", L"Distance:", WS_CHILD|WS_VISIBLE, 20,125,90,22,dlg,NULL,GetModuleHandle(NULL),NULL);
-        CreateWindowExW(0, L"BUTTON", L"OK", WS_CHILD|WS_VISIBLE|BS_DEFPUSHBUTTON, 40,160,80,26,dlg,(HMENU)201,GetModuleHandle(NULL),NULL);
-        CreateWindowExW(0, L"BUTTON", L"Cancel", WS_CHILD|WS_VISIBLE, 160,160,80,26,dlg,(HMENU)202,GetModuleHandle(NULL),NULL);
+        wchar_t buf[64];
+        swprintf(buf, 64, L"%.0f", s_ah); hEditAH = CreateWindowExW(0, L"EDIT", buf, WS_CHILD|WS_VISIBLE|WS_BORDER|ES_LEFT, 140,20,180,24,dlg,(HMENU)101,GetModuleHandle(NULL),NULL);
+        swprintf(buf, 64, L"%.0f", s_av); hEditAV = CreateWindowExW(0, L"EDIT", buf, WS_CHILD|WS_VISIBLE|WS_BORDER|ES_LEFT, 140,60,180,24,dlg,(HMENU)102,GetModuleHandle(NULL),NULL);
+        swprintf(buf, 64, L"%.0f", s_aw); hEditAW = CreateWindowExW(0, L"EDIT", buf, WS_CHILD|WS_VISIBLE|WS_BORDER|ES_LEFT, 140,100,180,24,dlg,(HMENU)103,GetModuleHandle(NULL),NULL);
+        swprintf(buf, 64, L"%.3f", s_dist); hEditDist = CreateWindowExW(0, L"EDIT", buf, WS_CHILD|WS_VISIBLE|WS_BORDER|ES_LEFT, 140,140,180,24,dlg,(HMENU)104,GetModuleHandle(NULL),NULL);
+        swprintf(buf, 64, L"%.1f", s_proj_scale); HWND hEditProjScale = CreateWindowExW(0, L"EDIT", buf, WS_CHILD|WS_VISIBLE|WS_BORDER|ES_LEFT, 140,180,180,24,dlg,(HMENU)106,GetModuleHandle(NULL),NULL);
+        // labels
+        CreateWindowExW(0, L"STATIC", L"Angle H:", WS_CHILD|WS_VISIBLE, 20,20,110,24,dlg,NULL,GetModuleHandle(NULL),NULL);
+        CreateWindowExW(0, L"STATIC", L"Angle V:", WS_CHILD|WS_VISIBLE, 20,60,110,24,dlg,NULL,GetModuleHandle(NULL),NULL);
+        CreateWindowExW(0, L"STATIC", L"Angle W:", WS_CHILD|WS_VISIBLE, 20,100,110,24,dlg,NULL,GetModuleHandle(NULL),NULL);
+        CreateWindowExW(0, L"STATIC", L"Distance:", WS_CHILD|WS_VISIBLE, 20,140,110,24,dlg,NULL,GetModuleHandle(NULL),NULL);
+        CreateWindowExW(0, L"STATIC", L"Projection scale:", WS_CHILD|WS_VISIBLE, 20,180,110,24,dlg,NULL,GetModuleHandle(NULL),NULL);
+        // buttons (lowered)
+        CreateWindowExW(0, L"BUTTON", L"OK", WS_CHILD|WS_VISIBLE|BS_DEFPUSHBUTTON, 60,230,90,28,dlg,(HMENU)201,GetModuleHandle(NULL),NULL);
+        CreateWindowExW(0, L"BUTTON", L"Cancel", WS_CHILD|WS_VISIBLE, 200,230,90,28,dlg,(HMENU)202,GetModuleHandle(NULL),NULL);
         return 0;
     }
     if (msg == WM_COMMAND) {
@@ -579,18 +638,31 @@ static LRESULT CALLBACK ParamsWndProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM 
             GetWindowTextW(hEditAV, buf, 64); s_av = (float)wcstod(buf, NULL);
             GetWindowTextW(hEditAW, buf, 64); s_aw = (float)wcstod(buf, NULL);
             GetWindowTextW(hEditDist, buf, 64); s_dist = (float)wcstod(buf, NULL);
+            GetWindowTextW((HWND)GetDlgItem(dlg, 106), buf, 64); s_proj_scale = (float)wcstod(buf, NULL);
+            if (s_proj_scale < 1.0f) s_proj_scale = 1.0f;
             // normalize angles to [0,360)
             s_ah = normalize_angle360(s_ah); s_av = normalize_angle360(s_av); s_aw = normalize_angle360(s_aw);
-            // apply params and recompute using GS3Dp semantics
+            // apply params and recompute using GS3Dp semantics (distance only)
             set_observer_params(s_ah, s_av, s_aw, s_dist);
+            // apply updated projection scale to painter
+            extern void set_projection_params(float cx, float cy, float scale);
+            set_projection_params(0.0f, 0.0f, s_proj_scale);
             if (g_model && g_obs) {
                 compute_obs_vertices(g_model, g_obs);
                 if (g_order) compute_painter_order(g_model, g_order);
             }
             HWND owner = GetWindow(dlg, GW_OWNER);
+            if (!owner) owner = GetParent(dlg);
+            if (!owner) owner = GetAncestor(dlg, GA_ROOTOWNER);
             if (owner) {
                 InvalidateRect(owner, NULL, TRUE);
+                UpdateWindow(owner);
                 render_frame(owner);
+            } else {
+                // Fallback: invalidate main window class by forcing a paint
+                InvalidateRect(NULL, NULL, TRUE);
+                // render_frame may be invoked on the current active window if available
+                HWND active = GetActiveWindow(); if (active) render_frame(active);
             }
             DestroyWindow(dlg);
             return 0;
@@ -604,13 +676,21 @@ static void on_show_params(HWND hwnd) {
     const wchar_t PCLS[] = L"GS3D_ParamsDlg";
     WNDCLASSW wc = {0}; wc.lpfnWndProc = ParamsWndProc; wc.hInstance = GetModuleHandle(NULL); wc.lpszClassName = PCLS; wc.hCursor = LoadCursor(NULL, IDC_ARROW);
     RegisterClassW(&wc);
-    HWND dlg = CreateWindowExW(0, PCLS, L"3D Parameters", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, CW_USEDEFAULT, CW_USEDEFAULT, 320, 240, hwnd, NULL, GetModuleHandle(NULL), NULL);
+    // make dialog slightly taller to fit controls cleanly
+    HWND dlg = CreateWindowExW(0, PCLS, L"3D Parameters", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, CW_USEDEFAULT, CW_USEDEFAULT, 360, 320, hwnd, NULL, GetModuleHandle(NULL), NULL);
     if (!dlg) { // non-blocking: log error, avoid messagebox
         const char* tmp = getenv("TEMP"); char logfn[1024]; if (tmp) snprintf(logfn, sizeof(logfn), "%s\\viewer_win32.log", tmp); else snprintf(logfn, sizeof(logfn), "viewer_win32.log"); FILE* lf = fopen(logfn, "a"); if (lf) { fprintf(lf, "ERROR: Failed to create params dialog\n"); fclose(lf); }
         return; }
-    // center over parent
-    RECT rc; GetWindowRect(hwnd, &rc); int cx = (rc.left+rc.right)/2 - 160; int cy = (rc.top+rc.bottom)/2 - 120; SetWindowPos(dlg, HWND_TOP, cx, cy, 320, 240, SWP_SHOWWINDOW);
+    // center over parent (account for increased height)
+    RECT rc; GetWindowRect(hwnd, &rc); int cx = (rc.left+rc.right)/2 - 180; int cy = (rc.top+rc.bottom)/2 - 160; SetWindowPos(dlg, HWND_TOP, cx, cy, 360, 320, SWP_SHOWWINDOW);
     ShowWindow(dlg, SW_SHOW);
-    // modal loop
-    MSG msg; while (IsWindow(dlg) && GetMessageW(&msg, NULL, 0,0)) { if (!IsDialogMessage(dlg, &msg)) { TranslateMessage(&msg); DispatchMessageW(&msg); } if (!IsWindow(dlg)) break; }
+    // modal loop with Enter handling: pressing Enter will trigger OK (ID 201)
+    MSG msg;
+    while (IsWindow(dlg) && GetMessageW(&msg, NULL, 0,0)) {
+        if (msg.message == WM_KEYDOWN && msg.wParam == VK_RETURN) {
+            PostMessageW(dlg, WM_COMMAND, MAKEWPARAM(201,0), 0);
+        }
+        if (!IsDialogMessage(dlg, &msg)) { TranslateMessage(&msg); DispatchMessageW(&msg); }
+        if (!IsWindow(dlg)) break;
+    }
 }

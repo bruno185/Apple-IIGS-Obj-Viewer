@@ -11,6 +11,14 @@ foreach ($g in $gens) {
     if ($LASTEXITCODE -eq 0) { $ok = $true; break }
 }
 if (-not $ok) { Write-Error "cmake generation failed (no supported VS generator found)"; exit 1 }
+# Ensure no running instances are holding the output file (stop viewer if running)
+$running = Get-Process -Name viewer_win32 -ErrorAction SilentlyContinue
+if ($running) {
+    Write-Host "Stopping running viewer_win32 process..."
+    $running | Stop-Process -Force
+    Start-Sleep -Milliseconds 500
+}
+
 cmake --build $build --config Release
 if ($LASTEXITCODE -ne 0) { Write-Error "build failed"; exit 1 }
 Write-Host "Build complete: $build\bin\Release\viewer_win32.exe (or bin\Release)"

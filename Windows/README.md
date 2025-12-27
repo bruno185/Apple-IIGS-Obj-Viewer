@@ -41,8 +41,10 @@ Windows\build_vs\bin\Release\viewer_win32.exe q1.obj
 
 Notes
 -----
-- Logs and runtime diagnostics are written to `%TEMP%\\viewer_win32.log`. 
+- Logs and runtime diagnostics are written to `%TEMP%\\viewer_win32.log`.
 - The Windows target `viewer_win32` is a GDI-based native viewer and is the primary Windows target.
+- **Win32 viewer**: open the menu **3D → Parameters...** and set **Distance** and **Projection scale**; changes are applied immediately when you press OK.
+- For the SDL viewer (console/window build) use the keyboard shortcuts `,` and `.` to **decrease / increase** the projection scale at runtime; the current projection scale is shown in the window title.
 - If you prefer to open the generated solution, use VS "Open Project/Solution" on `Windows/build_vs\GS3DpViewer.sln` (after configuring with CMake).
 
 Smoke test
@@ -70,6 +72,8 @@ Notes
 Running
 -------
 viewer.exe <path-to-obj> [--h <height>] [--angle_h <deg>] [--angle_v <deg>] [--distance <dist>]
+
+Note: Distance is controlled via the Win32 menu **3D → Parameters → Distance**; projection scale is adjustable in the same dialog (Win32) or via `,` / `.` keys in the SDL viewer.
 
 Notes
 -----

@@ -18,7 +18,7 @@ from pathlib import Path
 
 FUNC_NAMES = [
     'painter_newell_sancha_fast', 'painter_newell_sancha', 'dumpFaceEquationsCSV', 'createModel3D', 'destroyModel3D', 'loadModel3D',
-    'computeModelBoundingSphere', 'computeDistanceFromBoundingSphere', 'getObserverParams',
+    'computeModelBoundingSphere', 'getObserverParams',
     'processModelFast', 'processModelWireframe', 'readVertices', 'readFaces_model',
     'projectTo2D', 'calculateFaceDepths', 'computeDistanceToFit', 'autoScaleModel',
     'revertAutoScaleModel', 'backupModelCoords', 'freeBackupModelCoords', 'fitModelToView',

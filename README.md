@@ -35,7 +35,7 @@ This project reads simplified OBJ files (vertices `v` and faces `f`), performs 3
 ## Implementation notes
 - Critical computations are optimized to reduce floating conversions and avoid overflow (heavy use of `Fixed32` and `Fixed64`).
 - An orientation fix was added for OBJ Z-up exports (swap Y/Z at import) and can be reverted manually.
-- Auto‑fit uses a precomputed **bounding sphere** (centroid + radius) for O(1) distance estimates via `computeDistanceFromBoundingSphere()`; `computeDistanceToFit()` (per‑vertex scan) is retained but **deprecated** as a fallback.
+- Auto‑fit and automatic distance estimation have been disabled; observer distance is user-specified.
 
 ## Important functions & file:line references
 
@@ -47,7 +47,6 @@ This project reads simplified OBJ files (vertices `v` and faces `f`), performs 3
 - 🔧 `void destroyModel3D(Model3D* model)` — `GS3Dp.cc:1354`
 - 🔧 `int loadModel3D(Model3D* model, const char* filename)` — `GS3Dp.cc:1415`
 - 🔧 `void computeModelBoundingSphere(Model3D* model)` — `GS3Dp.cc:564`
-- 🔧 `Fixed32 computeDistanceFromBoundingSphere(Model3D* model, float margin)` — `GS3Dp.cc:565`
 - 🔧 `void getObserverParams(ObserverParams* params, Model3D* model)` — `GS3Dp.cc:575`
 - 🔧 `void processModelFast(Model3D* model, ObserverParams* params, const char* filename)` — `GS3Dp.cc:1606`
 - 🔧 `void processModelWireframe(Model3D* model, ObserverParams* params, const char* filename)` — `GS3Dp.cc:1715`
@@ -55,7 +54,6 @@ This project reads simplified OBJ files (vertices `v` and faces `f`), performs 3
 - 🔧 `int readFaces_model(const char* filename, Model3D* model)` — `GS3Dp.cc:1876`
 - 🔧 `void projectTo2D(VertexArrays3D* vtx, int angle_w_deg)` — `GS3Dp.cc:561`
 - 🔧 `void calculateFaceDepths(Model3D* model, Face3D* faces, int face_count)` — `GS3Dp.cc:629`
-- 🔧 `Fixed32 computeDistanceToFit(VertexArrays3D* vtx, float margin)` — `GS3Dp.cc:574`
 - 🔧 `void autoScaleModel(Model3D* model, float target_max_dim, float min_scale, float max_scale, int center_flag)` — `GS3Dp.cc:578`
 - 🔧 `void revertAutoScaleModel(Model3D* model)` — `GS3Dp.cc:579`
 - 🔧 `void backupModelCoords(Model3D* model)` — `GS3Dp.cc:589`

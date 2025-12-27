@@ -29,8 +29,8 @@
       - `backupModelCoords(model)` and *apply scale+center* to vertices (non-destructive)
       - update `model->auto_scale`, `auto_center_*`, `auto_scaled`
       - update model bounding sphere (`bs_cx/bs_cy/bs_cz/bs_r`) accordingly — now kept in sync **O(1)**
-      - set `params->distance = computeDistanceFromBoundingSphere(model, margin)` (fast **O(1)**)
-      - **FALLBACK:** 🔧 **`computeDistanceToFit()`** (slower per-vertex) only if sphere not valid
+      - Distance estimation is disabled here; `params->distance` must be set explicitly by the user
+      - **FALLBACK:** none — per-vertex auto-fit removed
   - else: set `params->distance` from user input
 
 ---
@@ -56,23 +56,21 @@
 - `startgraph()` / render / `endgraph()` / `DoText()` / optional `DoColor()`
 - Keys: Space (info), N (new model), Arrows / A Z (angles/distance), `r` (revert autoscale), `K` (edit angles/distance without reloading model), `+`/`-` (adjust autoscale)
 - `K` invokes `getObserverParams(&params, model)` interactively and applies new angles/distance without requiring a reload.
-- `+`/`-` behavior: if the model is not yet auto-scaled, these keys first perform an **auto-fit** (`fitModelToView()`); they then increase or decrease the current `params->distance`, update `model->auto_scale` and **scale the bounding sphere proportionally** (O(1)), and recompute `params->distance` using `computeDistanceFromBoundingSphere()` (fast). The action prints a short message (e.g., "Distance increased" / "Distance decreased").
+- `+`/`-` behavior: if the model is not yet auto-scaled, these keys first perform an **auto-fit** (`fitModelToView()`); they then increase or decrease the current `params->distance` and update `model->auto_scale`. Automatic recomputation via bounding-sphere is disabled; distance adjustments are manual. The action prints a short message (e.g., "Distance increased" / "Distance decreased").
 
 ---
 
 ## Supporting / fallback functions (short purpose)
 
 - 🔧 **`projectTo2D()`** — standalone projection helper (used in places)
-- 🔧 **`computeDistanceToFit(vtx, margin)`** — slower per-vertex fit (kept as fallback / DEPRECATED)
 - 🔧 **`computeModelBoundingSphere(model)`** — O(n) at load, stores `bs_*` in `Model3D`
-- 🔧 **`computeDistanceFromBoundingSphere(model, margin)`** — O(1) camera distance estimate using the bounding sphere
 - 🔧 **`autoScaleModel()` / `revertAutoScaleModel()`** — non-destructive scaling helpers (backup + apply + revert)
 - 🔧 **`backupModelCoords()` / `freeBackupModelCoords()`** — support for non-destructive transforms
 - 🔧 **`processModelWireframe(model, &params, filename)`** — lightweight wireframe processing (transform & project only) used for fast wireframe/frame-only rendering
 - 🔧 **`destroyModel3D(Model3D* model)`** — frees all memory allocated by `createModel3D()`; must be called to avoid leaks
 - 🔧 **`readVertices()` / `readFaces_model()`** — file parsing helpers
 
-**Notes:** `adjustDistanceFast()` (earlier fast-adjust prototype) was removed — use `+`/`-` behavior and `computeDistanceFromBoundingSphere()` for distance adjustments.
+**Notes:** `adjustDistanceFast()` (earlier fast-adjust prototype) was removed — automatic distance estimation has been disabled; distance adjustments are manual.
 
 ---
 
@@ -90,7 +88,6 @@
 - 🔧 `void destroyModel3D(Model3D* model)` — `GS3Dp.cc:1245`
 - 🔧 `int loadModel3D(Model3D* model, const char* filename)` — `GS3Dp.cc:1306`
 - 🔧 `void computeModelBoundingSphere(Model3D* model)` — `GS3Dp.cc:1339`
-- 🔧 `Fixed32 computeDistanceFromBoundingSphere(Model3D* model, float margin)` — `GS3Dp.cc:1367`
 - 🔧 `void getObserverParams(ObserverParams* params, Model3D* model)` — `GS3Dp.cc:1402`
 - 🔧 `void processModelFast(Model3D* model, ObserverParams* params, const char* filename)` — `GS3Dp.cc:1498`
 - 🔧 `void processModelWireframe(Model3D* model, ObserverParams* params, const char* filename)` — `GS3Dp.cc:1603`
@@ -98,7 +95,6 @@
 - 🔧 `int readFaces_model(const char* filename, Model3D* model)` — `GS3Dp.cc:1760`
 - 🔧 `void projectTo2D(VertexArrays3D* vtx, int angle_w_deg)` — `GS3Dp.cc:1875`
 - 🔧 `void calculateFaceDepths(Model3D* model, Face3D* faces, int face_count)` — `GS3Dp.cc:1940`
-- 🔧 `Fixed32 computeDistanceToFit(VertexArrays3D* vtx, float margin)` — `GS3Dp.cc:2062`
 - 🔧 `void autoScaleModel(Model3D* model, float target_max_dim, float min_scale, float max_scale, int center_flag)` — `GS3Dp.cc:2112`
 - 🔧 `void revertAutoScaleModel(Model3D* model)` — `GS3Dp.cc:2177`
 - 🔧 `void backupModelCoords(Model3D* model)` — `GS3Dp.cc:2207`

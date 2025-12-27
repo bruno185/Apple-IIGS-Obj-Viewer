@@ -92,6 +92,25 @@ Model* load_obj(const char* path) {
     {
         const char* tmp = getenv("TEMP"); char logfn[1024]; if (tmp) snprintf(logfn, sizeof(logfn), "%s\\viewer_obj.log", tmp); else snprintf(logfn, sizeof(logfn), "viewer_obj.log"); FILE* lf = fopen(logfn, "a"); if (lf) { fprintf(lf, "OBJ: parsed vlines=%d flines=%d vert_count=%d face_count=%d\n", vlines, flines, m->vert_count, m->face_count); fclose(lf); }
     }
+
+    // Apply bbox-centering to match GS3Dp: subtract center from vertex coordinates so model is centered on load
+    if (m->vert_count > 0) {
+        float minx = 1e30f, maxx = -1e30f, miny = 1e30f, maxy = -1e30f, minz = 1e30f, maxz = -1e30f;
+        for (int i = 0; i < m->vert_count; ++i) {
+            float vx = m->verts[i].x, vy = m->verts[i].y, vz = m->verts[i].z;
+            if (vx < minx) minx = vx; if (vx > maxx) maxx = vx;
+            if (vy < miny) miny = vy; if (vy > maxy) maxy = vy;
+            if (vz < minz) minz = vz; if (vz > maxz) maxz = vz;
+        }
+        float cx = (minx + maxx) * 0.5f;
+        float cy = (miny + maxy) * 0.5f;
+        float cz = (minz + maxz) * 0.5f;
+        for (int i = 0; i < m->vert_count; ++i) {
+            m->verts[i].x -= cx; m->verts[i].y -= cy; m->verts[i].z -= cz;
+        }
+        FILE* dbgcen = fopen(debugfn, "a"); if (dbgcen) { fprintf(dbgcen, "load_obj: applied bbox centering cx=%.6f cy=%.6f cz=%.6f\n", cx, cy, cz); fclose(dbgcen); }
+    }
+
     // exit log
     FILE* dbgfin = fopen(debugfn, "a"); if (dbgfin) { fprintf(dbgfin, "load_obj: finished v=%d f=%d\n", m->vert_count, m->face_count); fclose(dbgfin); }
     return m;

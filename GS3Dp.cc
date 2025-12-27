@@ -454,8 +454,7 @@ typedef struct {
     Fixed32 *orig_x;                   // NULL if no backup
     Fixed32 *orig_y;
     Fixed32 *orig_z;
-    float *radius_buf;            // scratch buffer for radii (squared distances) (float for cache)
-    int radius_buf_capacity;        // capacity of radius_buf
+    /* radius buffer removed: no automatic fit/distance computation */
     float *coord_buf;               // scratch buffer for converted float coordinates (x,y,z interleaved)
     int coord_buf_capacity;         // capacity in number of vertices for coord_buf
 
@@ -497,9 +496,9 @@ typedef struct {
  *   v 1.234 5.678 9.012
  *   v -2.5 0.0 3.14
  */
-int readVertices(const char* filename, VertexArrays3D* vtx, int max_vertices, Model3D* owner, int center_after);
-// Center vertices (subtract centroid). If out_cx/out_cy/out_cz != NULL, return centroid in fixed-point.
-void centerVertices(VertexArrays3D* vtx, int vcount, Fixed32* out_cx, Fixed32* out_cy, Fixed32* out_cz);
+int readVertices(const char* filename, VertexArrays3D* vtx, int max_vertices, Model3D* owner);
+// Note: readVertices now computes bbox center and stores it in owner->auto_center_{x,y,z} if owner!=NULL
+// It does NOT modify vertex coordinates (no auto-translation).
 
 /**
  * readFaces
@@ -564,16 +563,7 @@ void projectTo2D(VertexArrays3D* vtx, int angle_w_deg);
 
 /* Bounding sphere helpers */
 void computeModelBoundingSphere(Model3D* model);
-Fixed32 computeDistanceFromBoundingSphere(Model3D* model, float margin);
 
-/* DEPRECATED: computeDistanceToFit - vertex-based O(n) distance fit.
- * Historically used to compute observer distance by scanning all vertices.
- * Replaced by:
- *   - computeModelBoundingSphere() (computed once at model load)
- *   - computeDistanceFromBoundingSphere() (fast O(1) estimate based on sphere)
- * Kept here as a fallback and for historical reference; consider removal after validation.
- */
-Fixed32 computeDistanceToFit(VertexArrays3D* vtx, float margin);
 void getObserverParams(ObserverParams* params, Model3D* model);
 
 /* Auto-scaling helpers (non-destructive): allow automatic scaling on import with rollback */
@@ -1054,8 +1044,7 @@ Model3D* createModel3D(void) {
     model->orig_x = NULL;
     model->orig_y = NULL;
     model->orig_z = NULL;
-    model->radius_buf = NULL;
-    model->radius_buf_capacity = 0;
+    // radius_buf removed: no automatic vertex radius buffer maintained
     model->coord_buf = NULL;
     model->coord_buf_capacity = 0;
     model->bs_cx = 0.0f;
@@ -1387,7 +1376,6 @@ void destroyModel3D(Model3D* model) {
         if (model->orig_x) free(model->orig_x);
         if (model->orig_y) free(model->orig_y);
         if (model->orig_z) free(model->orig_z);
-        if (model->radius_buf) free(model->radius_buf);
         if (model->coord_buf) free(model->coord_buf);
         
         // Free main structure
@@ -1424,8 +1412,7 @@ int loadModel3D(Model3D* model, const char* filename) {
     // --- MAJ du compteur global pour la vérification des indices de faces ---
     readVertices_last_count = model->vertices.vertex_count;
     
-    // By default we do not center on read; pass owner pointer and center_after=0
-    int vcount = readVertices(filename, &model->vertices, MAX_VERTICES, model, 0);
+    int vcount = readVertices(filename, &model->vertices, MAX_VERTICES, model);
     if (vcount < 0) {
         return -1;  // Critical failure: unable to read vertices
     }
@@ -1476,19 +1463,6 @@ void computeModelBoundingSphere(Model3D* model) {
 }
 
 // Compute distance estimate directly from bounding sphere (cheap, O(1))
-Fixed32 computeDistanceFromBoundingSphere(Model3D* model, float margin) {
-    if (!model || !model->bs_valid) return FLOAT_TO_FIXED(30.0f);
-    float r = model->bs_r;
-    const float scale = 100.0f;
-    float screenHalfX = (float)CENTRE_X * margin;
-    float screenHalfY = (float)CENTRE_Y * margin;
-    float minScreenHalf = fminf(screenHalfX, screenHalfY);
-    float d_proj = (minScreenHalf > 0.0f) ? (r * scale) / minScreenHalf : 1.0f;
-    float d = d_proj + r + 1.0f;
-    d *= 1.05f;
-    if (!isfinite(d) || d < 1.0f) d = 1.0f;
-    return FLOAT_TO_FIXED(d);
-}
 
 // ============================================================================
 //                    USER INTERFACE FUNCTIONS
@@ -1825,7 +1799,7 @@ void processModelWireframe(Model3D* model, ObserverParams* params, const char* f
  * - Array overflow protection
  * - Coordinate format validation
  */
-int readVertices(const char* filename, VertexArrays3D* vtx, int max_vertices, Model3D* owner, int center_after) {
+int readVertices(const char* filename, VertexArrays3D* vtx, int max_vertices, Model3D* owner) {
     FILE *file;
     char line[MAX_LINE_LENGTH];
     int line_number = 1;
@@ -1870,20 +1844,31 @@ int readVertices(const char* filename, VertexArrays3D* vtx, int max_vertices, Mo
 
     // Close file
     fclose(file);
-    
-    // helper: centerVertices declared below
-    
-    // Optionally center the object around the origin
-    if (center_after && vertex_count > 0) {
-        Fixed32 cx=0, cy=0, cz=0;
-        centerVertices(vtx, vertex_count, &cx, &cy, &cz);
-        printf("[INFO] readVertices: centered object around centroid (cx=%.4f cy=%.4f cz=%.4f)\n", FIXED_TO_FLOAT(cx), FIXED_TO_FLOAT(cy), FIXED_TO_FLOAT(cz));
-        if (owner) {
-            owner->auto_centered = 1;
-            owner->auto_center_x = cx;
-            owner->auto_center_y = cy;
-            owner->auto_center_z = cz;
+
+    // Compute bbox center and save into owner (do not modify vertex coords)
+    if (vertex_count > 0 && owner) {
+        Fixed32 xmin = vtx->x[0], xmax = vtx->x[0];
+        Fixed32 ymin = vtx->y[0], ymax = vtx->y[0];
+        Fixed32 zmin = vtx->z[0], zmax = vtx->z[0];
+        for (int i = 1; i < vertex_count; ++i) {
+            if (vtx->x[i] < xmin) xmin = vtx->x[i];
+            if (vtx->x[i] > xmax) xmax = vtx->x[i];
+            if (vtx->y[i] < ymin) ymin = vtx->y[i];
+            if (vtx->y[i] > ymax) ymax = vtx->y[i];
+            if (vtx->z[i] < zmin) zmin = vtx->z[i];
+            if (vtx->z[i] > zmax) zmax = vtx->z[i];
         }
+        owner->auto_center_x = (Fixed32)((xmin + xmax) / 2);
+        owner->auto_center_y = (Fixed32)((ymin + ymax) / 2);
+        owner->auto_center_z = (Fixed32)((zmin + zmax) / 2);
+        // Apply centering to vertex coordinates (default behavior requested)
+        for (int i = 0; i < vertex_count; ++i) {
+            vtx->x[i] = FIXED_SUB(vtx->x[i], owner->auto_center_x);
+            vtx->y[i] = FIXED_SUB(vtx->y[i], owner->auto_center_y);
+            vtx->z[i] = FIXED_SUB(vtx->z[i], owner->auto_center_z);
+        }
+        owner->auto_centered = 1; // indicate coords were centered
+        printf("[INFO] readVertices: applied bbox center cx=%.4f cy=%.4f cz=%.4f\n", FIXED_TO_FLOAT(owner->auto_center_x), FIXED_TO_FLOAT(owner->auto_center_y), FIXED_TO_FLOAT(owner->auto_center_z));
     }
 
     // printf("\n\nAnalyse terminee. %d lignes lues.\n", line_number - 1);
@@ -2006,32 +1991,6 @@ int readFaces_model(const char* filename, Model3D* model) {
 }
 
 // Function to project 3D coordinates onto 2D screen - FIXED POINT VERSION
-
-// Center the vertex arrays by subtracting centroid (computed in float, applied in Fixed32).
-// If out_cx/out_cy/out_cz are non-NULL, they receive the centroid values in Fixed32.
-void centerVertices(VertexArrays3D* vtx, int vcount, Fixed32* out_cx, Fixed32* out_cy, Fixed32* out_cz) {
-    if (!vtx || vcount <= 0) return;
-    double cx = 0.0, cy = 0.0, cz = 0.0;
-    for (int i = 0; i < vcount; ++i) {
-        cx += FIXED_TO_FLOAT(vtx->x[i]);
-        cy += FIXED_TO_FLOAT(vtx->y[i]);
-        cz += FIXED_TO_FLOAT(vtx->z[i]);
-    }
-    cx /= (double)vcount; cy /= (double)vcount; cz /= (double)vcount;
-    Fixed32 cxf = FLOAT_TO_FIXED((float)cx);
-    Fixed32 cyf = FLOAT_TO_FIXED((float)cy);
-    Fixed32 czf = FLOAT_TO_FIXED((float)cz);
-    // Subtract centroid (in fixed-point) from each vertex
-    for (int i = 0; i < vcount; ++i) {
-        vtx->x[i] = FIXED_SUB(vtx->x[i], cxf);
-        vtx->y[i] = FIXED_SUB(vtx->y[i], cyf);
-        vtx->z[i] = FIXED_SUB(vtx->z[i], czf);
-    }
-    if (out_cx) *out_cx = cxf;
-    if (out_cy) *out_cy = cyf;
-    if (out_cz) *out_cz = czf;
-}
-
 void projectTo2D(VertexArrays3D* vtx, int angle_w_deg) {
     int i;
     Fixed32 cos_w, sin_w;
@@ -2252,136 +2211,19 @@ void dumpFaceEquationsCSV(Model3D* model, const char* csv_filename) {
     printf("Wrote face equations to %s (%d faces)\n", csv_filename, face_count);
 }
 
-// DEPRECATED: computeDistanceToFit
-// ---------------------------------
-// This vertex-based function computed an observer distance by scanning all
-// vertices (O(n)). It was originally used to auto-fit the model into view.
-//
-// It has been superseded by the bounding-sphere approach:
-//  - computeModelBoundingSphere() computes a centroid+radius once at model load
-//  - computeDistanceFromBoundingSphere() estimates distance in O(1) from that sphere
-//
-// The function is retained here as a fallback and for historical/diagnostic
-// purposes. Prefer the bounding-sphere helpers for production paths.
-
-// Compute an observation distance (Fixed32) that fits the model within the view.
-// Uses the model bounding box and projection scale to estimate a conservative distance
-// so the model fits with the requested margin (0..1).
-// Optimized: avoid per-vertex float conversions by computing min/max in Fixed32 then
-// convert to float only once per axis (fewer expensive float ops for large models).
-Fixed32 computeDistanceToFit(VertexArrays3D* vtx, float margin) {
-    if (vtx == NULL || vtx->vertex_count <= 0) return FLOAT_TO_FIXED(30.0f);
-
-    int n = vtx->vertex_count;
-    // Initialize mins/maxs with first vertex to avoid large sentinels
-    Fixed32 minx_f = vtx->x[0], maxx_f = vtx->x[0];
-    Fixed32 miny_f = vtx->y[0], maxy_f = vtx->y[0];
-    Fixed32 minz_f = vtx->z[0], maxz_f = vtx->z[0];
-
-    for (int i = 1; i < n; ++i) {
-        Fixed32 xi = vtx->x[i];
-        Fixed32 yi = vtx->y[i];
-        Fixed32 zi = vtx->z[i];
-        if (xi < minx_f) minx_f = xi;
-        if (xi > maxx_f) maxx_f = xi;
-        if (yi < miny_f) miny_f = yi;
-        if (yi > maxy_f) maxy_f = yi;
-        if (zi < minz_f) minz_f = zi;
-        if (zi > maxz_f) maxz_f = zi;
-    }
-
-    // Convert deltas to float only once
-    float width = FIXED_TO_FLOAT(FIXED_SUB(maxx_f, minx_f));
-    float height = FIXED_TO_FLOAT(FIXED_SUB(maxy_f, miny_f));
-    float depth = FIXED_TO_FLOAT(FIXED_SUB(maxz_f, minz_f));
-    float half_w = width * 0.5f;
-    float half_h = height * 0.5f;
-    float half_depth = depth * 0.5f;
-
-    const float scale = 100.0f; // matches projection scale
-    float screenHalfX = (float)CENTRE_X * margin;
-    float screenHalfY = (float)CENTRE_Y * margin;
-
-    float d_for_w = (screenHalfX > 0.0f) ? (half_w * scale) / screenHalfX : 1.0f;
-    float d_for_h = (screenHalfY > 0.0f) ? (half_h * scale) / screenHalfY : 1.0f;
-    float d = fmaxf(d_for_w, d_for_h);
-
-    if (!isfinite(d) || d < 1.0f) d = 1.0f;
-
-    // add half depth so the center offset is respected and a small safety margin
-    d += half_depth + 1.0f;
-    return FLOAT_TO_FIXED(d);
-}
-
+/* Vertex-based distance helpers removed */
 
 // ==============================================================
 // Auto-scaling helpers
-// Non-destructive: subtract center, apply scale, store metadata
-// Provide a revert function to restore original coordinates
+// Auto-scaling removed per request: functions are now no-ops for safety.
 // ==============================================================
 void autoScaleModel(Model3D* model, float target_max_dim, float min_scale, float max_scale, int center_flag) {
-    if (model == NULL) return;
-    VertexArrays3D* vtx = &model->vertices;
-    int n = vtx->vertex_count;
-    if (n <= 0) return;
-
-    // If the model was already auto-scaled, revert first to avoid cumulative scaling
-    if (model->auto_scaled) {
-        revertAutoScaleModel(model);
-    }
-
-    Fixed32 minx = vtx->x[0], maxx = vtx->x[0];
-    Fixed32 miny = vtx->y[0], maxy = vtx->y[0];
-    Fixed32 minz = vtx->z[0], maxz = vtx->z[0];
-    for (int i = 1; i < n; ++i) {
-        Fixed32 xi = vtx->x[i];
-        Fixed32 yi = vtx->y[i];
-        Fixed32 zi = vtx->z[i];
-        if (xi < minx) minx = xi; if (xi > maxx) maxx = xi;
-        if (yi < miny) miny = yi; if (yi > maxy) maxy = yi;
-        if (zi < minz) minz = zi; if (zi > maxz) maxz = zi;
-    }
-
-    float width = FIXED_TO_FLOAT(FIXED_SUB(maxx, minx));
-    float height = FIXED_TO_FLOAT(FIXED_SUB(maxy, miny));
-    float depth = FIXED_TO_FLOAT(FIXED_SUB(maxz, minz));
-    float maxdim = fmaxf(width, fmaxf(height, depth));
-    if (maxdim <= 0.0f) return;
-
-    float scale_f = target_max_dim / maxdim;
-    if (scale_f < min_scale) scale_f = min_scale;
-    if (scale_f > max_scale) scale_f = max_scale;
-    Fixed32 scale_fixed = FLOAT_TO_FIXED(scale_f);
-
-    Fixed32 center_x = FIXED_DIV(FIXED_ADD(minx, maxx), INT_TO_FIXED(2));
-    Fixed32 center_y = FIXED_DIV(FIXED_ADD(miny, maxy), INT_TO_FIXED(2));
-    Fixed32 center_z = FIXED_DIV(FIXED_ADD(minz, maxz), INT_TO_FIXED(2));
-
-    // Backup original coordinates for exact revert and ensure non-cumulative scaling
-    backupModelCoords(model);
-
-    // Apply: subtract center (if requested) then scale, using original coordinates as base
-    for (int i = 0; i < n; ++i) {
-        Fixed32 ox = model->orig_x ? model->orig_x[i] : vtx->x[i];
-        Fixed32 oy = model->orig_y ? model->orig_y[i] : vtx->y[i];
-        Fixed32 oz = model->orig_z ? model->orig_z[i] : vtx->z[i];
-        if (center_flag) {
-            vtx->x[i] = FIXED_MUL_64(FIXED_SUB(ox, center_x), scale_fixed);
-            vtx->y[i] = FIXED_MUL_64(FIXED_SUB(oy, center_y), scale_fixed);
-            vtx->z[i] = FIXED_MUL_64(FIXED_SUB(oz, center_z), scale_fixed);
-        } else {
-            vtx->x[i] = FIXED_MUL_64(ox, scale_fixed);
-            vtx->y[i] = FIXED_MUL_64(oy, scale_fixed);
-            vtx->z[i] = FIXED_MUL_64(oz, scale_fixed);
-        }
-    }
-
-    model->auto_scale = scale_fixed;
-    model->auto_center_x = center_x;
-    model->auto_center_y = center_y;
-    model->auto_center_z = center_z;
-    model->auto_scaled = 1;
-    model->auto_centered = center_flag;
+    // Do not modify model coordinates or distance; just clear any auto-scale flags
+    if (!model) return;
+    model->auto_scaled = 0;
+    model->auto_centered = 0;
+    model->auto_scale = FIXED_ONE;
+    (void)target_max_dim; (void)min_scale; (void)max_scale; (void)center_flag;
 }
 
 void revertAutoScaleModel(Model3D* model) {
@@ -2419,10 +2261,8 @@ void revertAutoScaleModel(Model3D* model) {
     /* Recompute the bounding sphere from the (restored) model coordinates so that
        distance estimations and subsequent auto-fit operations are based on current data. */
     computeModelBoundingSphere(model);
-
-    // free radius buffer when reverting (optional but keeps memory tidy)
-    if (model->radius_buf) { free(model->radius_buf); model->radius_buf = NULL; model->radius_buf_capacity = 0; }
 }
+
 
 void backupModelCoords(Model3D* model) {
     if (model == NULL) return;
@@ -2456,268 +2296,35 @@ void freeBackupModelCoords(Model3D* model) {
     if (model->orig_x) { free(model->orig_x); model->orig_x = NULL; }
     if (model->orig_y) { free(model->orig_y); model->orig_y = NULL; }
     if (model->orig_z) { free(model->orig_z); model->orig_z = NULL; }
-    if (model->radius_buf) { free(model->radius_buf); model->radius_buf = NULL; model->radius_buf_capacity = 0; }
 }
 
 // Fit model to view using sphere-based metric with percentile trimming
 void fitModelToView(Model3D* model, ObserverParams* params, float target_max_dim, float margin, float percentile, int center_flag) {
+    // Auto-scaling and automatic distance calculations have been disabled per request.
+    // This function now only computes the centroid (if needed) and stores it; it will NOT modify
+    // vertex coordinates nor override params->distance which must be provided by the user.
     if (model == NULL || params == NULL) return;
     VertexArrays3D* vtx = &model->vertices;
-    int n = vtx->vertex_count;
-    if (n <= 0) return;
+    int n = vtx->vertex_count; if (n <= 0) return;
 
-    // Compute centroid using original coordinates if available
-    // Vertex sampling: sample up to max_samples vertices uniformly (no face traversal)
-    const int max_samples = 4096;
-    int step = 1;
-    int sampleCount = n;
-    float minR = 0.0f, maxR = 0.0f; // declared here for scope to be used later
-    if (n > max_samples) {
-        step = (n + max_samples - 1) / max_samples; // ceil division
-        if (step < 1) step = 1;
-        sampleCount = (n + step - 1) / step;
-    }
-
-    // Compute centroid on sampled vertices (fast, no allocations)
-    float cx = 0.0f, cy = 0.0f, cz = 0.0f;
-    int sc = 0;
-    for (int vi = 0; vi < n; vi += step) {
-        Fixed32 xi = model->orig_x ? model->orig_x[vi] : vtx->x[vi];
-        Fixed32 yi = model->orig_y ? model->orig_y[vi] : vtx->y[vi];
-        Fixed32 zi = model->orig_z ? model->orig_z[vi] : vtx->z[vi];
-        cx += FIXED_TO_FLOAT(xi);
-        cy += FIXED_TO_FLOAT(yi);
-        cz += FIXED_TO_FLOAT(zi);
-        sc++;
-    }
-
-    if (sc < 3) {
-        // Fallback: process the full dataset (rare)
-        if (model->coord_buf_capacity < n) {
-            if (model->coord_buf) free(model->coord_buf);
-            model->coord_buf = (float*)malloc((size_t)n * 3 * sizeof(float));
-            if (!model->coord_buf) { model->coord_buf_capacity = 0; return; }
-            model->coord_buf_capacity = n;
-        }
-        float *coords = model->coord_buf;
-        cx = cy = cz = 0.0f;
-        for (int i = 0; i < n; ++i) {
-            Fixed32 xi = model->orig_x ? model->orig_x[i] : vtx->x[i];
-            Fixed32 yi = model->orig_y ? model->orig_y[i] : vtx->y[i];
-            Fixed32 zi = model->orig_z ? model->orig_z[i] : vtx->z[i];
-            float xf = FIXED_TO_FLOAT(xi);
-            float yf = FIXED_TO_FLOAT(yi);
-            float zf = FIXED_TO_FLOAT(zi);
-            coords[i*3 + 0] = xf;
-            coords[i*3 + 1] = yf;
-            coords[i*3 + 2] = zf;
-            cx += xf; cy += yf; cz += zf;
-        }
-        cx /= (float)n; cy /= (float)n; cz /= (float)n;
-
-        // Ensure radius buffer capacity
-        if (model->radius_buf_capacity < n) {
-            if (model->radius_buf) free(model->radius_buf);
-            model->radius_buf = (float*)malloc((size_t)n * sizeof(float));
-            if (!model->radius_buf) { model->radius_buf_capacity = 0; return; }
-            model->radius_buf_capacity = n;
-        }
-
-        // Fill buffer with squared radii and compute min/max in one pass
-        float dx0 = coords[0*3 + 0] - cx;
-        float dy0 = coords[0*3 + 1] - cy;
-        float dz0 = coords[0*3 + 2] - cz;
-        float r20 = dx0*dx0 + dy0*dy0 + dz0*dz0;
-        model->radius_buf[0] = r20;
-        float minR = r20, maxR = r20;
-        for (int i = 1; i < n; ++i) {
-            float dx = coords[i*3 + 0] - cx;
-            float dy = coords[i*3 + 1] - cy;
-            float dz = coords[i*3 + 2] - cz;
-            float r2 = dx*dx + dy*dy + dz*dz;
-            model->radius_buf[i] = r2;
-            if (r2 < minR) minR = r2;
-            if (r2 > maxR) maxR = r2;
-        }
-        sampleCount = n; // use full dataset
-    } else {
-        // Use sampled vertices (sc samples)
-        if (model->radius_buf_capacity < sc) {
-            if (model->radius_buf) free(model->radius_buf);
-            model->radius_buf = (float*)malloc((size_t)sc * sizeof(float));
-            if (!model->radius_buf) { model->radius_buf_capacity = 0; return; }
-            model->radius_buf_capacity = sc;
-        }
-        cx /= (float)sc; cy /= (float)sc; cz /= (float)sc;
-        float minR = 0.0f, maxR = 0.0f;
-        int ii = 0;
-        for (int vi = 0; vi < n; vi += step) {
-            Fixed32 xi = model->orig_x ? model->orig_x[vi] : vtx->x[vi];
-            Fixed32 yi = model->orig_y ? model->orig_y[vi] : vtx->y[vi];
-            Fixed32 zi = model->orig_z ? model->orig_z[vi] : vtx->z[vi];
-            float dx = FIXED_TO_FLOAT(xi) - cx;
-            float dy = FIXED_TO_FLOAT(yi) - cy;
-            float dz = FIXED_TO_FLOAT(zi) - cz;
-            float r2 = dx*dx + dy*dy + dz*dz;
-            model->radius_buf[ii] = r2;
-            if (ii == 0) { minR = maxR = r2; } else { if (r2 < minR) minR = r2; if (r2 > maxR) maxR = r2; }
-            ii++;
-        }
-        sampleCount = sc;
-    }
-
-    // Select the percentile squared radius using optimized quickselect (median-of-three pivot)
-    int idx = (int)(percentile * sampleCount) - 1;
-    if (idx < 0) idx = 0; if (idx >= sampleCount) idx = sampleCount-1;
-
-    // We already computed minR/maxR during radius filling earlier (minR/maxR available)
-    if (minR == maxR) {
-        float Rf = sqrtf(model->radius_buf[idx]);
-        if (Rf <= 0.0f) return;
-        double scale_f = (double)(target_max_dim / (2.0f * Rf));
-        if (!isfinite(scale_f) || scale_f <= 0.0) return;
-        if (scale_f < 0.01) scale_f = 0.01; if (scale_f > 1000.0) scale_f = 1000.0;
-        Fixed32 scale_fixed = FLOAT_TO_FIXED((float)scale_f);
-
-        // Backup original coords and apply scale+center
-        backupModelCoords(model);
-
-        Fixed32 center_x = FLOAT_TO_FIXED((float)cx);
-        Fixed32 center_y = FLOAT_TO_FIXED((float)cy);
-        Fixed32 center_z = FLOAT_TO_FIXED((float)cz);
-
-        for (int i = 0; i < n; ++i) {
-            Fixed32 ox = model->orig_x[i];
-            Fixed32 oy = model->orig_y[i];
-            Fixed32 oz = model->orig_z[i];
-            if (center_flag) {
-                vtx->x[i] = FIXED_MUL_64(FIXED_SUB(ox, center_x), scale_fixed);
-                vtx->y[i] = FIXED_MUL_64(FIXED_SUB(oy, center_y), scale_fixed);
-                vtx->z[i] = FIXED_MUL_64(FIXED_SUB(oz, center_z), scale_fixed);
-            } else {
-                vtx->x[i] = FIXED_MUL_64(ox, scale_fixed);
-                vtx->y[i] = FIXED_MUL_64(oy, scale_fixed);
-                vtx->z[i] = FIXED_MUL_64(oz, scale_fixed);
-            }
-        }
-
-        model->auto_scale = scale_fixed;
-        model->auto_center_x = center_x;
-        model->auto_center_y = center_y;
-        model->auto_center_z = center_z;
-        model->auto_scaled = 1;
-        model->auto_centered = center_flag;
-
-        // Update bounding sphere parameters according to applied scaling and set distance from sphere (fast, O(1))
-        {
-            float scale_f32 = FIXED_TO_FLOAT(scale_fixed);
-            if (model->bs_valid) {
-                if (center_flag) {
-                    model->bs_cx = (model->bs_cx - FIXED_TO_FLOAT(center_x)) * scale_f32;
-                    model->bs_cy = (model->bs_cy - FIXED_TO_FLOAT(center_y)) * scale_f32;
-                    model->bs_cz = (model->bs_cz - FIXED_TO_FLOAT(center_z)) * scale_f32;
-                } else {
-                    model->bs_cx = model->bs_cx * scale_f32;
-                    model->bs_cy = model->bs_cy * scale_f32;
-                    model->bs_cz = model->bs_cz * scale_f32;
-                }
-                model->bs_r *= scale_f32;
-                model->bs_valid = 1;
-                params->distance = computeDistanceFromBoundingSphere(model, margin);
-            } else {
-                // fallback (rare): compute from vertices (slower)
-                params->distance = computeDistanceToFit(&model->vertices, margin);
-            }
-        }
-        printf("[FIT] p%g radius=%.3f scale=%.4f applied. New distance: %.2f\n", percentile*100.0, (double)Rf, (double)scale_f, FIXED_TO_FLOAT(params->distance));
-        return;
-    }
-    // Quickselect (iterative) with median-of-three pivot selection on the sample
-    int left = 0, right = sampleCount - 1;
-    while (left < right) {
-        int mid = left + ((right - left) >> 1);
-        // median-of-three: pick median of left, mid, right
-        float a = model->radius_buf[left], b = model->radius_buf[mid], c = model->radius_buf[right];
-        float pivot = b;
-        if ((a <= b && b <= c) || (c <= b && b <= a)) pivot = b;
-        else if ((b <= a && a <= c) || (c <= a && a <= b)) pivot = a;
-        else pivot = c;
-
-        int i = left, j = right;
-        while (i <= j) {
-            while (model->radius_buf[i] < pivot) i++;
-            while (model->radius_buf[j] > pivot) j--;
-            if (i <= j) {
-                float tmp = model->radius_buf[i]; model->radius_buf[i] = model->radius_buf[j]; model->radius_buf[j] = tmp;
-                i++; j--;
-            }
-        }
-        if (idx <= j) right = j;
-        else if (idx >= i) left = i;
-        else break;
-    }
-
-    float R2f = model->radius_buf[idx];
-    float Rf = sqrtf(R2f);
-    if (Rf <= 0.0f) return;
-
-    // Compute scale from sphere metric
-    double scale_f = (double)(target_max_dim / (2.0f * Rf));
-    if (!isfinite(scale_f) || scale_f <= 0.0) return;
-    if (scale_f < 0.01) scale_f = 0.01; if (scale_f > 1000.0) scale_f = 1000.0;
-    Fixed32 scale_fixed = FLOAT_TO_FIXED((float)scale_f);
-
-    // Backup original coords and apply scale+center
-    backupModelCoords(model);
-
-    Fixed32 center_x = FLOAT_TO_FIXED((float)cx);
-    Fixed32 center_y = FLOAT_TO_FIXED((float)cy);
-    Fixed32 center_z = FLOAT_TO_FIXED((float)cz);
-
+    // Compute centroid (using original coords if available)
+    double cx = 0.0, cy = 0.0, cz = 0.0; int count = 0;
     for (int i = 0; i < n; ++i) {
-        Fixed32 ox = model->orig_x[i];
-        Fixed32 oy = model->orig_y[i];
-        Fixed32 oz = model->orig_z[i];
-        if (center_flag) {
-            vtx->x[i] = FIXED_MUL_64(FIXED_SUB(ox, center_x), scale_fixed);
-            vtx->y[i] = FIXED_MUL_64(FIXED_SUB(oy, center_y), scale_fixed);
-            vtx->z[i] = FIXED_MUL_64(FIXED_SUB(oz, center_z), scale_fixed);
-        } else {
-            vtx->x[i] = FIXED_MUL_64(ox, scale_fixed);
-            vtx->y[i] = FIXED_MUL_64(oy, scale_fixed);
-            vtx->z[i] = FIXED_MUL_64(oz, scale_fixed);
-        }
+        Fixed32 xi = model->orig_x ? model->orig_x[i] : vtx->x[i];
+        Fixed32 yi = model->orig_y ? model->orig_y[i] : vtx->y[i];
+        Fixed32 zi = model->orig_z ? model->orig_z[i] : vtx->z[i];
+        cx += FIXED_TO_FLOAT(xi); cy += FIXED_TO_FLOAT(yi); cz += FIXED_TO_FLOAT(zi);
+        count++;
     }
-
-    model->auto_scale = scale_fixed;
-    model->auto_center_x = center_x;
-    model->auto_center_y = center_y;
-    model->auto_center_z = center_z;
-    model->auto_scaled = 1;
-    model->auto_centered = center_flag;
-
-    // Update bounding sphere parameters according to applied scaling and set distance from sphere (fast, O(1))
-    {
-        float scale_f32 = FIXED_TO_FLOAT(scale_fixed);
-        if (model->bs_valid) {
-            if (center_flag) {
-                model->bs_cx = (model->bs_cx - FIXED_TO_FLOAT(center_x)) * scale_f32;
-                model->bs_cy = (model->bs_cy - FIXED_TO_FLOAT(center_y)) * scale_f32;
-                model->bs_cz = (model->bs_cz - FIXED_TO_FLOAT(center_z)) * scale_f32;
-            } else {
-                model->bs_cx = model->bs_cx * scale_f32;
-                model->bs_cy = model->bs_cy * scale_f32;
-                model->bs_cz = model->bs_cz * scale_f32;
-            }
-            model->bs_r *= scale_f32;
-            model->bs_valid = 1;
-            params->distance = computeDistanceFromBoundingSphere(model, margin);
-        } else {
-            // fallback (rare): compute from vertices (slower)
-            params->distance = computeDistanceToFit(&model->vertices, margin);
-        }
+    if (count > 0) {
+        cx /= (double)count; cy /= (double)count; cz /= (double)count;
+        model->auto_center_x = FLOAT_TO_FIXED((float)cx);
+        model->auto_center_y = FLOAT_TO_FIXED((float)cy);
+        model->auto_center_z = FLOAT_TO_FIXED((float)cz);
+        model->auto_centered = 0; // do not indicate that coords were auto-centered
     }
-    printf("[FIT] p%g radius=%.3f scale=%.4f applied. New distance: %.2f\n", percentile*100.0, (double)Rf, (double)scale_f, FIXED_TO_FLOAT(params->distance));
+    // Do not modify params->distance; respect user-provided distance.
+    return;
 }
 
 

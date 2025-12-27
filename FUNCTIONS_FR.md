@@ -38,10 +38,7 @@ Ce fichier répertorie les fonctions majeures trouvées dans `GS3Dp.cc` et donne
   - Sauvegarde / restaure ou libère une copie des coordonnées du modèle (utilisé pour transformations temporaires).
 
 - `void computeModelBoundingSphere(Model3D* model)`
-  - Calcule le centre et rayon approximatif du modèle (pour auto-fit, heuristiques).
-
-- `Fixed32 computeDistanceFromBoundingSphere(Model3D* model, float margin)`
-  - Estime une distance d'observation basée sur la bounding sphere et une marge.
+  - Calcule le centre et rayon approximatif du modèle (non utilisé pour auto-distance automatique).
 
 ---
 
