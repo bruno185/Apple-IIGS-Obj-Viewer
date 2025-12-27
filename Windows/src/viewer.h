@@ -1,7 +1,6 @@
 #ifndef VIEWER_H
 #define VIEWER_H
 
-#include "fixed32.h"
 
 typedef struct { float x,y,z; } Vertex;
 typedef struct { int *indices; int count; float z_min,z_mean,z_max; float plane_a, plane_b, plane_c, plane_d; int minx,maxx,miny,maxy; int display_flag; } Face;

@@ -164,26 +164,8 @@ static void render_frame(HWND hwnd) {
     // background
     HBRUSH bg = CreateSolidBrush(RGB(16,16,16)); FillRect(memdc, &(RECT){0,0,winw,winh}, bg); DeleteObject(bg);
 
-    // TEST DRAW: draw simple shapes to verify GDI rendering
-    {
-        // red rectangle
-        HPEN pen = CreatePen(PS_SOLID, 2, RGB(255,0,0)); HPEN oldp = SelectObject(memdc, pen);
-        HBRUSH brush = CreateSolidBrush(RGB(255,0,0)); HBRUSH oldb = SelectObject(memdc, brush);
-        Rectangle(memdc, 20, 20, 120, 120);
-        SelectObject(memdc, oldb); DeleteObject(brush);
-        SelectObject(memdc, oldp); DeleteObject(pen);
-        // green circle
-        HPEN pen2 = CreatePen(PS_SOLID, 2, RGB(0,255,0)); HPEN oldp2 = SelectObject(memdc, pen2);
-        HBRUSH brush2 = CreateSolidBrush(RGB(0,255,0)); HBRUSH oldb2 = SelectObject(memdc, brush2);
-        Ellipse(memdc, 140, 20, 240, 120);
-        SelectObject(memdc, oldb2); DeleteObject(brush2);
-        SelectObject(memdc, oldp2); DeleteObject(pen2);
-        // text
-        SetTextColor(memdc, RGB(255,255,255)); SetBkMode(memdc, TRANSPARENT);
-        TextOutA(memdc, 20, 130, "GDI test shapes", 15);
-        // log
-        const char* tmp = getenv("TEMP"); char logfn[1024]; if (tmp) snprintf(logfn, sizeof(logfn), "%s\\viewer_win32.log", tmp); else snprintf(logfn, sizeof(logfn), "viewer_win32.log"); FILE* lf = fopen(logfn, "a"); if (lf) { fprintf(lf, "TESTDRAW: drew rectangle/circle/text\n"); fclose(lf); }
-    }
+    // Test drawings removed for production; no test shapes are drawn in release UI.
+    /* removed */
 
     // diagnostics: write projection bbox/scale and sample vertices to log
     {
@@ -300,6 +282,18 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             }
             else if (wParam == VK_SUBTRACT || wParam == VK_OEM_MINUS) {
                 s_proj_scale *= 0.9f; if (s_proj_scale < 1.0f) s_proj_scale = 1.0f; changed = 1;
+            }
+            // Also attempt to translate this virtual key to a character for layout-independent '+'/'-' detection
+            else {
+                BYTE kb[256]; if (GetKeyboardState(kb)) {
+                    WORD outch = 0; UINT sc = (UINT)((lParam >> 16) & 0xFF);
+                    int n = ToAscii((UINT)wParam, sc, kb, &outch, 0);
+                    if (n == 1) {
+                        char ch = (char)outch;
+                        if (ch == '+') { s_proj_scale *= 1.1f; if (s_proj_scale > 2000.0f) s_proj_scale = 2000.0f; changed = 1; }
+                        else if (ch == '-') { s_proj_scale *= 0.9f; if (s_proj_scale < 1.0f) s_proj_scale = 1.0f; changed = 1; }
+                    }
+                }
             }
             if (changed) {
                 // keep angles modulo 360

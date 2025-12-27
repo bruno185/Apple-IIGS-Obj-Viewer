@@ -1,7 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "fixed32.h"
 
 // Simple OBJ loader for v x y z and f i j k ... (1-based indices)
 

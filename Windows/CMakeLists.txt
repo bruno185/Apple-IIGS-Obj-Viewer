@@ -35,9 +35,7 @@ endif()
 if(NOT WIN32)
 add_executable(viewer
     src/main.c
-    src/fixed32.h
-    src/obj.c
-    src/painter.c
+
     src/renderer.c
 )
 
@@ -50,8 +48,6 @@ endif()
 if (WIN32)
     add_executable(viewer_win32 WIN32
         src/win32_main.c
-        src/win32_renderer.c
-        src/fixed32.h
         src/obj.c
         src/painter.c
         src/viewer.h

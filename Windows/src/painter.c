@@ -5,7 +5,6 @@
 #define M_PI 3.14159265358979323846
 #endif
 #include <string.h>
-#include "fixed32.h"
 
 // Minimal structures (mirrors those in obj.c)
 typedef struct { float x,y,z; } Vertex;
