@@ -92,7 +92,12 @@ static void calculateFaceDepths(Model* model) {
         Face* face = &model->faces[i]; float zmin = 1e30f, zmax = -1e30f, sum = 0.0f; int n = face->count; int minx = 999999, maxx = -999999, miny = 999999, maxy = -999999; int display_flag = 1;
         for (int k = 0; k < n; ++k) {
             int vid = face->indices[k]; if (vid < 0 || vid >= model->vert_count) continue;
-            ObsVertex ov = g_obsv[vid]; float zo = ov.zo; if (zo < 0.0f) display_flag = 0; if (zo < zmin) zmin = zo; if (zo > zmax) zmax = zo; sum += zo;
+            ObsVertex ov = g_obsv[vid];
+            float zo = ov.zo;
+            if (zo < 0.0f) display_flag = 0;
+            if (zo < zmin) zmin = zo;
+            if (zo > zmax) zmax = zo;
+            sum += zo;
             float px = (ov.zo == 0.0f) ? ov.xo : (ov.xo / ov.zo);
             float py = (ov.zo == 0.0f) ? ov.yo : (ov.yo / ov.zo);
             int sx = (int)lroundf((s_proj_cx - px) * -s_proj_scale + (s_proj_scale*0.5f));

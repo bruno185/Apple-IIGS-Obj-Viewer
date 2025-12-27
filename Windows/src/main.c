@@ -27,7 +27,16 @@ int main(int argc, char** argv) {
         set_observer_params(ah, av, aw, dist);
         compute_obs_vertices(m, obs);
         float pxmin=1e30f, pxmax=-1e30f, pymin=1e30f, pymax=-1e30f;
-        for (int i=0;i<m->vert_count;i++) { ObsVertex v = obs[i]; if (v.yo==0.0f) continue; float px = v.xo / v.yo; float py = v.zo / v.yo; if (px<pxmin) pxmin=px; if (px>pxmax) pxmax=px; if (py<pymin) pymin=py; if (py>pymax) pymax=py; }
+        for (int i = 0; i < m->vert_count; i++) {
+            ObsVertex v = obs[i];
+            if (v.yo == 0.0f) continue;
+            float px = v.xo / v.yo;
+            float py = v.zo / v.yo;
+            if (px < pxmin) pxmin = px;
+            if (px > pxmax) pxmax = px;
+            if (py < pymin) pymin = py;
+            if (py > pymax) pymax = py;
+        }
         float margin = 0.9f; float s1 = (winw * margin) / (pxmax - pxmin); float s2 = (winh * margin) / (pymax - pymin); proj_scale = (s1 < s2) ? s1 : s2;
         snprintf(titlebuf, sizeof(titlebuf), "GS3Dp Viewer - proj_scale=%.1f", proj_scale); SDL_SetWindowTitle(win, titlebuf);
     }

@@ -87,7 +87,20 @@ Model* load_obj(const char* path) {
     }
     // compute basic z stats per face
     for (int i=0;i<m->face_count;i++) {
-        Face* face = &m->faces[i]; float zmin = 1e30f, zmax = -1e30f, sum = 0; for (int k=0;k<face->count;k++) { float z = m->verts[face->indices[k]].z; if (z<zmin) zmin=z; if (z>zmax) zmax=z; sum+=z; } face->z_min = zmin; face->z_max = zmax; face->z_mean = sum / face->count; }
+        Face* face = &m->faces[i];
+        float zmin = 1e30f;
+        float zmax = -1e30f;
+        float sum = 0;
+        for (int k = 0; k < face->count; k++) {
+            float z = m->verts[face->indices[k]].z;
+            if (z < zmin) zmin = z;
+            if (z > zmax) zmax = z;
+            sum += z;
+        }
+        face->z_min = zmin;
+        face->z_max = zmax;
+        face->z_mean = sum / face->count;
+    }
     // log counts
     {
         const char* tmp = getenv("TEMP"); char logfn[1024]; if (tmp) snprintf(logfn, sizeof(logfn), "%s\\viewer_obj.log", tmp); else snprintf(logfn, sizeof(logfn), "viewer_obj.log"); FILE* lf = fopen(logfn, "a"); if (lf) { fprintf(lf, "OBJ: parsed vlines=%d flines=%d vert_count=%d face_count=%d\n", vlines, flines, m->vert_count, m->face_count); fclose(lf); }

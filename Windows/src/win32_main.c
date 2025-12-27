@@ -15,7 +15,12 @@
 #define ID_FILE_QUIT  1002
 #define ID_3D_PARAMS  2001
 
-static Model* g_model = NULL; static float s_ah = 30.0f, s_av = 20.0f, s_aw = 0.0f, s_dist = 300.0f; static float s_proj_scale = 100.0f; // angle_h, angle_v, angle_w, distance and projection scale (pixels per unit)
+static Model* g_model = NULL;
+static float s_ah = 30.0f;
+static float s_av = 20.0f;
+static float s_aw = 0.0f;
+static float s_dist = 300.0f;
+static float s_proj_scale = 100.0f; // angle_h, angle_v, angle_w, distance and projection scale (pixels per unit)
 static int s_dump_on_load = 0; // if set, dump face equations CSV after async model load
 static ObsVertex* g_obs = NULL;
 static int* g_order = NULL;
@@ -47,11 +52,27 @@ static void start_async_load(HWND hwnd, const char* path);
 static void close_load_debug(void);
 
 static void compute_projection_and_order(HWND hwnd, int* out_winw, int* out_winh, float* out_cx, float* out_cy, float* out_scale, float* out_pxmin, float* out_pxmax, float* out_pymin, float* out_pymax) {
-    RECT r; GetClientRect(hwnd, &r); int winw = r.right - r.left; int winh = r.bottom - r.top; *out_winw = winw; *out_winh = winh;
+    RECT r;
+    GetClientRect(hwnd, &r);
+    int winw = r.right - r.left;
+    int winh = r.bottom - r.top;
+    *out_winw = winw;
+    *out_winh = winh;
     compute_obs_vertices(g_model, g_obs);
-    float pxmin=1e30f, pxmax=-1e30f, pymin=1e30f, pymax=-1e30f;
-    for (int i=0;i<g_model->vert_count;i++) {
-        ObsVertex ov = g_obs[i]; if (ov.zo == 0.0f) continue; float px = ov.xo/ov.zo; float py = ov.yo/ov.zo; if (px<pxmin) pxmin=px; if (px>pxmax) pxmax=px; if (py<pymin) pymin=py; if (py>pymax) pymax=py; }
+    float pxmin = 1e30f;
+    float pxmax = -1e30f;
+    float pymin = 1e30f;
+    float pymax = -1e30f;
+    for (int i = 0; i < g_model->vert_count; i++) {
+        ObsVertex ov = g_obs[i];
+        if (ov.zo == 0.0f) continue;
+        float px = ov.xo / ov.zo;
+        float py = ov.yo / ov.zo;
+        if (px < pxmin) pxmin = px;
+        if (px > pxmax) pxmax = px;
+        if (py < pymin) pymin = py;
+        if (py > pymax) pymax = py;
+    }
 
     // Match GS3Dp behavior: model-space centering applied at load.
     // Use projected-space center (0,0) and user-controlled projection scale (s_proj_scale). Distance modifies perspective only; projection scale controls display size.
@@ -77,7 +98,12 @@ static void apply_auto_fit(HWND hwnd, Model* m, ObsVertex* obs) {
         if (vy < miny) miny = vy; if (vy > maxy) maxy = vy;
         if (vz < minz) minz = vz; if (vz > maxz) maxz = vz;
     }
-    float dx = maxx - minx; float dy = maxy - miny; float dz = maxz - minz; float max_dim = dx; if (dy > max_dim) max_dim = dy; if (dz > max_dim) max_dim = dz;
+    float dx = maxx - minx;
+    float dy = maxy - miny;
+    float dz = maxz - minz;
+    float max_dim = dx;
+    if (dy > max_dim) max_dim = dy;
+    if (dz > max_dim) max_dim = dz;
 
     // set distance to 3 * max_dim
     s_dist = 3.0f * max_dim;
