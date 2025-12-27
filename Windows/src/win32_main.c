@@ -229,9 +229,9 @@ static void render_frame(HWND hwnd) {
         }
     }
 
-    // draw parameter overlay at bottom (Angle H, V, W, Distance)
+    // draw parameter overlay at bottom (Angle H, V, W, Distance, Projection scale)
     {
-        char buf[256]; snprintf(buf, sizeof(buf), "H=%.1f V=%.1f W=%.1f D=%.3f", s_ah, s_av, s_aw, s_dist);
+        char buf[256]; snprintf(buf, sizeof(buf), "H=%.1f V=%.1f W=%.1f D=%.3f S=%.1f", s_ah, s_av, s_aw, s_dist, s_proj_scale);
         SetTextColor(memdc, RGB(220,220,220)); SetBkMode(memdc, TRANSPARENT);
         TextOutA(memdc, 10, winh - 20, buf, (int)strlen(buf));
     }
@@ -281,7 +281,25 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             else if (wParam == 0x57) { g_wireframe = !g_wireframe; InvalidateRect(hwnd, NULL, TRUE); }
             else if ((wParam == 'O' && (GetKeyState(VK_CONTROL) & 0x8000)) ) { on_file_open(hwnd); }
             else if ((wParam == 'Q' && (GetKeyState(VK_CONTROL) & 0x8000)) ) { PostQuitMessage(0); }
-            else if (wParam == 'D') { if (g_model) { dumpFaceEquationsCSV_Model(g_model); const char* tmp = getenv("TEMP"); char logfn[1024]; if (tmp) snprintf(logfn, sizeof(logfn), "%s\\viewer_win32.log", tmp); else snprintf(logfn, sizeof(logfn), "viewer_win32.log"); FILE* lf = fopen(logfn, "a"); if (lf) { fprintf(lf, "DEBUGDUMP: wrote %s\\equ_windows.csv\n", (tmp?tmp:".") ); fclose(lf); } }
+            else if (wParam == 'D') {
+                if (g_model) {
+                    dumpFaceEquationsCSV_Model(g_model);
+                    const char* tmp = getenv("TEMP"); char logfn[1024]; if (tmp) snprintf(logfn, sizeof(logfn), "%s\\viewer_win32.log", tmp); else snprintf(logfn, sizeof(logfn), "viewer_win32.log"); FILE* lf = fopen(logfn, "a"); if (lf) { fprintf(lf, "DEBUGDUMP: wrote %s\\equ_windows.csv\n", (tmp?tmp:".") ); fclose(lf); }
+                }
+            }
+            // Distance controls: A/a decreases by 10%, Z/z increases by 10%
+            else if (wParam == 'A' || wParam == 'a') {
+                s_dist *= 0.9f; if (s_dist < 0.01f) s_dist = 0.01f; changed = 1;
+            }
+            else if (wParam == 'Z' || wParam == 'z') {
+                s_dist *= 1.1f; changed = 1;
+            }
+            // Projection scale controls: '+' increases by 10%, '-' decreases by 10%
+            else if (wParam == VK_OEM_PLUS || wParam == VK_ADD || wParam == '+') {
+                s_proj_scale *= 1.1f; if (s_proj_scale > 2000.0f) s_proj_scale = 2000.0f; changed = 1;
+            }
+            else if (wParam == VK_OEM_MINUS || wParam == VK_SUBTRACT || wParam == '-') {
+                s_proj_scale *= 0.9f; if (s_proj_scale < 1.0f) s_proj_scale = 1.0f; changed = 1;
             }
             if (changed) {
                 // keep angles modulo 360
@@ -295,6 +313,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 InvalidateRect(hwnd, NULL, TRUE);
                 // force immediate render so user sees changes at once
                 render_frame(hwnd);
+                // log distance/scale change
+                const char* tmp = getenv("TEMP"); char logfn[1024]; if (tmp) snprintf(logfn, sizeof(logfn), "%s\\viewer_win32.log", tmp); else snprintf(logfn, sizeof(logfn), "viewer_win32.log"); FILE* lf = fopen(logfn, "a"); if (lf) { fprintf(lf, "UI: dist=%.6f proj_scale=%.6f\n", s_dist, s_proj_scale); fclose(lf); } 
             }
         }
         return 0;
