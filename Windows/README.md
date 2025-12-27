@@ -39,11 +39,9 @@ Windows\build_vs\bin\Release\viewer_win32.exe <path-to-obj> [--angle_h <deg>] [-
 Windows\build_vs\bin\Release\viewer_win32.exe q1.obj
 ```
 
-MinGW: MinGW builds are not maintained or tested in this repository — **use MSVC** via `Windows\build_msvc.ps1` for recommended builds. If absolutely necessary, you can generate MinGW Makefiles manually with CMake (for example: `cmake -S Windows -B Windows/build_mingw -G "MinGW Makefiles" && cmake --build Windows/build_mingw --config Release`), but this path is unsupported.
-
 Notes
 -----
-- Logs and runtime diagnostics are written to `%TEMP%\viewer_win32.log`. 
+- Logs and runtime diagnostics are written to `%TEMP%\\viewer_win32.log`. 
 - The Windows target `viewer_win32` is a GDI-based native viewer and is the primary Windows target.
 - If you prefer to open the generated solution, use VS "Open Project/Solution" on `Windows/build_vs\GS3DpViewer.sln` (after configuring with CMake).
 
