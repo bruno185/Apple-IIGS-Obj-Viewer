@@ -294,11 +294,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             else if (wParam == 'Z' || wParam == 'z') {
                 s_dist *= 1.1f; changed = 1;
             }
-            // Projection scale controls: '+' increases by 10%, '-' decreases by 10%
-            else if (wParam == VK_OEM_PLUS || wParam == VK_ADD || wParam == '+') {
+            // Projection scale controls: handle keypad and OEM keys here; character handling in WM_CHAR
+            else if (wParam == VK_ADD || wParam == VK_OEM_PLUS) {
                 s_proj_scale *= 1.1f; if (s_proj_scale > 2000.0f) s_proj_scale = 2000.0f; changed = 1;
             }
-            else if (wParam == VK_OEM_MINUS || wParam == VK_SUBTRACT || wParam == '-') {
+            else if (wParam == VK_SUBTRACT || wParam == VK_OEM_MINUS) {
                 s_proj_scale *= 0.9f; if (s_proj_scale < 1.0f) s_proj_scale = 1.0f; changed = 1;
             }
             if (changed) {
@@ -316,6 +316,31 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 // log distance/scale change
                 const char* tmp = getenv("TEMP"); char logfn[1024]; if (tmp) snprintf(logfn, sizeof(logfn), "%s\\viewer_win32.log", tmp); else snprintf(logfn, sizeof(logfn), "viewer_win32.log"); FILE* lf = fopen(logfn, "a"); if (lf) { fprintf(lf, "UI: dist=%.6f proj_scale=%.6f\n", s_dist, s_proj_scale); fclose(lf); } 
             }
+        }
+        return 0;
+    case WM_CHAR:
+        {
+            // Catch character-level '+' and '-' (layout-independent for shifted keys)
+            if (wParam == '+' ) {
+                s_proj_scale *= 1.1f; if (s_proj_scale > 2000.0f) s_proj_scale = 2000.0f;
+            } else if (wParam == '-') {
+                s_proj_scale *= 0.9f; if (s_proj_scale < 1.0f) s_proj_scale = 1.0f;
+            } else if (wParam == 'A' || wParam == 'a') {
+                s_dist *= 0.9f; if (s_dist < 0.01f) s_dist = 0.01f;
+            } else if (wParam == 'Z' || wParam == 'z') {
+                s_dist *= 1.1f;
+            } else {
+                break; // not handled here
+            }
+            // apply and render immediately
+            set_observer_params(s_ah, s_av, s_aw, s_dist);
+            if (g_model && g_obs) {
+                compute_obs_vertices(g_model, g_obs);
+                if (g_order) compute_painter_order(g_model, g_order);
+            }
+            InvalidateRect(hwnd, NULL, TRUE);
+            render_frame(hwnd);
+            const char* tmp = getenv("TEMP"); char logfn[1024]; if (tmp) snprintf(logfn, sizeof(logfn), "%s\\viewer_win32.log", tmp); else snprintf(logfn, sizeof(logfn), "viewer_win32.log"); FILE* lf = fopen(logfn, "a"); if (lf) { fprintf(lf, "UI: dist=%.6f proj_scale=%.6f\n", s_dist, s_proj_scale); fclose(lf); }
         }
         return 0;
     case WM_COMMAND:
