@@ -35,11 +35,14 @@ typedef struct { Model* m; int* order; } LoadResult;
 typedef struct { HWND hwnd; char* path; } LoaderArg;
 
 // Loading debug dialog globals
-static HWND g_load_dbg = NULL; static HWND g_dbg_edit = NULL; static HWND g_dbg_ok = NULL;
+/* Retain dialog code but keep globals to avoid compile errors (dialog not shown by default) */
+static HWND g_dbg_edit = NULL;
+static HWND g_dbg_ok = NULL;
+static HWND g_load_dbg = NULL;
 
 static DWORD WINAPI loader_thread_fn(LPVOID arg);
 static void start_async_load(HWND hwnd, const char* path);
-static void create_load_debug(HWND parent, const char* path);
+
 static void close_load_debug(void);
 
 static void compute_projection_and_order(HWND hwnd, int* out_winw, int* out_winh, float* out_cx, float* out_cy, float* out_scale, float* out_pxmin, float* out_pxmax, float* out_pymin, float* out_pymax) {
@@ -243,11 +246,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             InvalidateRect(hwnd, NULL, TRUE);
             // optionally dump face equations for debugging parity with GS3Dp
             if (s_dump_on_load) { if (g_model) { dumpFaceEquationsCSV_Model(g_model); const char* tmp2 = getenv("TEMP"); char logfn2[1024]; if (tmp2) snprintf(logfn2, sizeof(logfn2), "%s\\viewer_win32.log", tmp2); else snprintf(logfn2, sizeof(logfn2), "viewer_win32.log"); FILE* lf2 = fopen(logfn2, "a"); if (lf2) { fprintf(lf2, "DEBUGDUMP: wrote %s\\equ_windows.csv\n", (tmp2?tmp2:".")); fclose(lf2); } } }
-            // notify debug dialog that loading finished
-            if (g_dbg_edit) {
-                const char* done = "Model loaded successfully.\r\n"; int len = GetWindowTextLengthA(g_dbg_edit); SendMessageA(g_dbg_edit, EM_SETSEL, (WPARAM)len, (LPARAM)len); SendMessageA(g_dbg_edit, EM_REPLACESEL, 0, (LPARAM)done);
-                if (g_dbg_ok) EnableWindow(g_dbg_ok, TRUE);
-            }
+            // loading finished (no debug dialog): write a log entry
+            const char* tmp3 = getenv("TEMP"); char logfn3[1024]; if (tmp3) snprintf(logfn3, sizeof(logfn3), "%s\\viewer_win32.log", tmp3); else snprintf(logfn3, sizeof(logfn3), "viewer_win32.log"); FILE* lf3 = fopen(logfn3, "a"); if (lf3) { fprintf(lf3, "Load complete.\n"); fclose(lf3); }
             free(res);
         }
         return 0;
@@ -379,9 +379,8 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
         ShowWindow(hwnd, SW_SHOWNORMAL);
         BringWindowToTop(hwnd);
         SetForegroundWindow(hwnd);
-        // Inform user interactively to avoid silent exit when double-clicked
-        MessageBoxW(hwnd, L"No OBJ path provided. Use File->Open (Ctrl+O) to load a model.", L"Info", MB_OK | MB_ICONINFORMATION);
-        const char* tmp3 = getenv("TEMP"); char logfn3[1024]; if (tmp3) snprintf(logfn3, sizeof(logfn3), "%s\\viewer_win32.log", tmp3); else snprintf(logfn3, sizeof(logfn3), "viewer_win32.log"); FILE* lf3 = fopen(logfn3, "a"); if (lf3) { fprintf(lf3, "UI: showed No OBJ messagebox\n"); fclose(lf3); }
+        // Non-intrusive behavior: do not show a blocking message box when no OBJ was supplied
+        const char* tmp3 = getenv("TEMP"); char logfn3[1024]; if (tmp3) snprintf(logfn3, sizeof(logfn3), "%s\\viewer_win32.log", tmp3); else snprintf(logfn3, sizeof(logfn3), "viewer_win32.log"); FILE* lf3 = fopen(logfn3, "a"); if (lf3) { fprintf(lf3, "UI: started with no OBJ path; main window shown (no messagebox)\n"); fclose(lf3); }
     }
 
     // Additional diagnostics: log visibility and cmdshow for debugging double-click exits
@@ -485,8 +484,8 @@ static DWORD WINAPI loader_thread_fn(LPVOID arg) {
     // post result
     LoadResult* res = (LoadResult*)malloc(sizeof(LoadResult)); res->m = nm; res->order = order_buf;
     PostMessageW(hwnd, WM_MODEL_LOADED, 0, (LPARAM)res);
-    // signal the UI that loading is finished (so debug dialog can enable OK)
-    PostMessageW(hwnd, WM_MODEL_LOAD_LOG, 0, (LPARAM)_strdup("Load complete. Click OK to close this window.\r\n"));
+    // signal the UI that loading is finished (no dialog shown); write a log entry instead
+    PostMessageW(hwnd, WM_MODEL_LOAD_LOG, 0, (LPARAM)_strdup("Load complete.\r\n"));
     if (lsf) { FILE* lsf8 = fopen(loader_logfn, "a"); if (lsf8) { fprintf(lsf8, "THREAD: posted WM_MODEL_LOADED and finished\n"); fclose(lsf8); } }
     free(a);
     return 0;
@@ -494,9 +493,8 @@ static DWORD WINAPI loader_thread_fn(LPVOID arg) {
 
 static void start_async_load(HWND hwnd, const char* path) {
     if (!path) return; 
-    // log and show debug dialog
+    // log async load start (no UI dialogs)
     const char* tmp = getenv("TEMP"); char logfn[1024]; if (tmp) snprintf(logfn, sizeof(logfn), "%s\\viewer_win32.log", tmp); else snprintf(logfn, sizeof(logfn), "viewer_win32.log"); FILE* lf0 = fopen(logfn, "a"); if (lf0) { fprintf(lf0, "UI: start_async_load called for %s\n", path); fclose(lf0); }
-    create_load_debug(hwnd, path);
     LoaderArg* a = (LoaderArg*)malloc(sizeof(LoaderArg)); if (!a) return;
     a->hwnd = hwnd; a->path = _strdup(path);
     // Use _beginthreadex to ensure CRT is properly initialized in the new thread

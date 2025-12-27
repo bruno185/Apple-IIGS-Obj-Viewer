@@ -117,8 +117,6 @@ static void calculateFaceDepths(Model* model) {
     }
 }
 
-/* pair_should_swap removed — tests inlined into compute_painter_order to match GS3Dp.cc semantics and avoid duplicated logic */
-
 int compute_painter_order(Model* m, int* order_out) {
     if (!m || !order_out) return 0;
     g_model = m;
