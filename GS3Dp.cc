@@ -86,7 +86,7 @@ static int use_float_painter = 0;
 
 // --- Reusable scratch buffers for float painter to avoid per-call malloc/free ---
 static float *float_xo = NULL, *float_yo = NULL, *float_zo = NULL; static int float_vcap = 0;
-static float *f_z_min_buf = NULL, *f_z_max_buf = NULL, *f_z_mean_buf = NULL;
+static float *float_px = NULL, *float_py = NULL; static int *float_px_int = NULL, *float_py_int = NULL;static float *f_z_min_buf = NULL, *f_z_max_buf = NULL, *f_z_mean_buf = NULL;
 static int *f_minx_buf = NULL, *f_maxx_buf = NULL, *f_miny_buf = NULL, *f_maxy_buf = NULL;
 static int *f_display_buf = NULL;
 static float *f_plane_a_buf = NULL, *f_plane_b_buf = NULL, *f_plane_c_buf = NULL, *f_plane_d_buf = NULL;
@@ -106,9 +106,12 @@ static void ensure_vertex_capacity(int vcount) {
     float_xo = (float*)realloc(float_xo, sizeof(float) * newcap);
     float_yo = (float*)realloc(float_yo, sizeof(float) * newcap);
     float_zo = (float*)realloc(float_zo, sizeof(float) * newcap);
+    float_px = (float*)realloc(float_px, sizeof(float) * newcap);
+    float_py = (float*)realloc(float_py, sizeof(float) * newcap);
+    float_px_int = (int*)realloc(float_px_int, sizeof(int) * newcap);
+    float_py_int = (int*)realloc(float_py_int, sizeof(int) * newcap);
     float_vcap = newcap;
 }
-
 static void ensure_face_capacity(int face_count) {
     // allocate if not present
     if (f_z_min_buf && f_z_max_buf && f_z_mean_buf && f_minx_buf) { if (order_cap >= face_count) return; }
@@ -1120,7 +1123,23 @@ void painter_newell_sancha_float(Model3D* model, int face_count) {
     ensure_order_capacity(face_count);
     ensure_ordered_pairs_hash(face_count);
 
-    for (int i = 0; i < vcount; ++i) { float_xo[i] = FIXED_TO_FLOAT(vtx->xo[i]); float_yo[i] = FIXED_TO_FLOAT(vtx->yo[i]); float_zo[i] = FIXED_TO_FLOAT(vtx->zo[i]); }
+    for (int i = 0; i < vcount; ++i) {
+        float_xo[i] = FIXED_TO_FLOAT(vtx->xo[i]);
+        float_yo[i] = FIXED_TO_FLOAT(vtx->yo[i]);
+        float_zo[i] = FIXED_TO_FLOAT(vtx->zo[i]);
+    }
+
+    // Precompute projected px/py and integer screen coords per vertex (one division per vertex)
+    float proj_scale = FIXED_TO_FLOAT(s_global_proj_scale_fixed);
+    for (int i = 0; i < vcount; ++i) {
+        float z = float_zo[i];
+        float_px[i] = (z == 0.0f) ? float_xo[i] : (float_xo[i] / z);
+        float_py[i] = (z == 0.0f) ? float_yo[i] : (float_yo[i] / z);
+        float screenx = (0.0f - float_px[i]) * -proj_scale + (proj_scale * 0.5f);
+        float screeny = (0.0f - float_py[i]) * -proj_scale + (proj_scale * 0.5f);
+        float_px_int[i] = (int)(screenx + 0.5f);
+        float_py_int[i] = (int)(screeny + 0.5f);
+    }
 
     float *f_z_min = f_z_min_buf;
     float *f_z_max = f_z_max_buf;
@@ -1136,8 +1155,6 @@ void painter_newell_sancha_float(Model3D* model, int face_count) {
     float *f_plane_d = f_plane_d_buf;
 
     float proj_cx = 0.0f, proj_cy = 0.0f;
-    float proj_scale = FIXED_TO_FLOAT(s_global_proj_scale_fixed);
-
     for (int fi = 0; fi < face_count; ++fi) {
         int off = faces->vertex_indices_ptr[fi];
         int n = faces->vertex_count[fi];
@@ -1149,13 +1166,9 @@ void painter_newell_sancha_float(Model3D* model, int face_count) {
             if (vid < 0 || vid >= vcount) continue;
             float z = float_zo[vid]; if (z < 0.0f) disp = 0;
             if (z < zmin) zmin = z; if (z > zmaxf) zmaxf = z; sum += z;
-            float px = (z == 0.0f) ? float_xo[vid] : (float_xo[vid] / z);
-            float py = (z == 0.0f) ? float_yo[vid] : (float_yo[vid] / z);
-            // faster rounding without lroundf
-            float screenx = (proj_cx - px) * -proj_scale + (proj_scale * 0.5f);
-            float screeny = (proj_cy - py) * -proj_scale + (proj_scale * 0.5f);
-            int sx = (int)(screenx + 0.5f);
-            int sy = (int)(screeny + 0.5f);
+            // use precomputed projected ints
+            int sx = float_px_int[vid];
+            int sy = float_py_int[vid];
             if (sx < minx) minx = sx; if (sx > maxx) maxx = sx; if (sy < miny) miny = sy; if (sy > maxy) maxy = sy;
         }
         if (!disp || n < 3) {
@@ -1176,10 +1189,62 @@ void painter_newell_sancha_float(Model3D* model, int face_count) {
     int* order = order_buf;
     for (int i = 0; i < face_count; ++i) order[i] = i;
 
-    // qsort by float mean
-    qsort_float_zmean = f_z_mean;
-    qsort(order, face_count, sizeof(int), cmp_float_zmean);
-    qsort_float_zmean = NULL;
+    // Sort faces by z_mean. For performance we use a simple bucket sort (linear time) when face_count is large,
+    // and insertion sort for small counts.
+    if (face_count <= 64) {
+        // insertion sort (descending)
+        for (int i = 1; i < face_count; ++i) {
+            int key = order[i];
+            float kz = f_z_mean[key];
+            int j = i - 1;
+            while (j >= 0) {
+                int ov = order[j];
+                float oz = f_z_mean[ov];
+                if (oz > kz || (oz == kz && ov < key)) break; // descending, tie-breaker: smaller index first
+                order[j+1] = order[j]; j--;
+            }
+            order[j+1] = key;
+        }
+    } else {
+        int buckets = (face_count < 256) ? face_count : 256;
+        float zmin_all = 1e30f, zmax_all = -1e30f;
+        for (int i = 0; i < face_count; ++i) { if (f_z_mean[i] < zmin_all) zmin_all = f_z_mean[i]; if (f_z_mean[i] > zmax_all) zmax_all = f_z_mean[i]; }
+        if (zmax_all == zmin_all) {
+            // all equal, leave identity order (but stable tie-break)
+            for (int i = 0; i < face_count; ++i) order[i] = i;
+        } else {
+            int *counts = (int*)calloc(buckets, sizeof(int));
+            int *temp = (int*)malloc(sizeof(int) * face_count);
+            // bucket indices (counts)
+            for (int i = 0; i < face_count; ++i) {
+                int idx = (int)((f_z_mean[i] - zmin_all) / (zmax_all - zmin_all) * (buckets - 1));
+                if (idx < 0) idx = 0; if (idx >= buckets) idx = buckets - 1;
+                counts[idx]++;
+            }
+            // compute starts (prefix sums)
+            int *starts = (int*)malloc(sizeof(int) * buckets);
+            int acc = 0;
+            for (int b = 0; b < buckets; ++b) { starts[b] = acc; acc += counts[b]; }
+            // place items into temp according to starts
+            int *pos_in_bucket = (int*)malloc(sizeof(int) * buckets);
+            for (int b = 0; b < buckets; ++b) pos_in_bucket[b] = starts[b];
+            for (int i = 0; i < face_count; ++i) {
+                int idx = (int)((f_z_mean[i] - zmin_all) / (zmax_all - zmin_all) * (buckets - 1));
+                if (idx < 0) idx = 0; if (idx >= buckets) idx = buckets - 1;
+                temp[pos_in_bucket[idx]++] = i;
+            }
+            // flatten buckets from high to low into order (descending z_mean)
+            int pos = 0;
+            for (int b = buckets - 1; b >= 0; --b) {
+                int start = starts[b];
+                int cnt = counts[b];
+                for (int t = 0; t < cnt; ++t) {
+                    order[pos++] = temp[start + t];
+                }
+            }
+            free(pos_in_bucket); free(starts); free(temp); free(counts);
+        }
+    }
 
     // use hash table for ordered pairs (O(1) checks)
     // ensure_ordered_pairs_hash(face_count) already called above
@@ -2733,6 +2798,9 @@ void DoText() {
         char filename[100];
         char input[50];
         int colorpalette = 0; // default color palette
+        int last_process_time_start = 0;
+        int last_process_time_end = 0;
+
 
 
     newmodel:
@@ -2863,6 +2931,7 @@ void DoText() {
     bigloop:
         // Process model with parameters - OPTIMIZED VERSION
             // Process model with parameters - OPTIMIZED VERSION
+        last_process_time_start = GetTick();
         printf("Processing model...\n");
         if (framePolyOnly) {
             // Wireframe mode: only project vertices and set simple face visibility—skip face sorting
@@ -2870,6 +2939,7 @@ void DoText() {
         } else {
             processModelFast(model, &params, filename);
         }
+        last_process_time_end = GetTick();
 
 
     loopReDraw:
@@ -2923,11 +2993,11 @@ void DoText() {
                 printf("    Horizontal Angle: %d deg\n", params.angle_h);
                 printf("    Vertical Angle: %d deg\n", params.angle_v);
                 printf("    Screen Rotation Angle: %d deg\n", params.angle_w);
-                if (model->auto_scaled) {
-                    printf("    Auto-scale: ON (factor %.4f, centered: %s)\n", FIXED_TO_FLOAT(model->auto_scale), model->auto_centered ? "yes" : "no");
-                } else {
-                    printf("    Auto-scale: OFF\n");
-                }
+                printf("    Projection scale: %.2f\n", FIXED_TO_FLOAT(s_global_proj_scale_fixed));
+                if (painter_mode == PAINTER_MODE_FAST) printf("    Painter mode: FAST (simple face sorting only)\n");
+                else if (painter_mode == PAINTER_MODE_FIXED) printf("    Painter mode: NORMAL (Fixed32)\n");
+                else printf("    Painter mode: FLOAT (float-based)\n\n");
+                printf ("Processing time: %d ticks (1/60 sec.)\n", last_process_time_end - last_process_time_start);
                 printf("===================================\n");
                 printf("\n");
                 printf("Press any key to continue...\n");
@@ -3028,7 +3098,7 @@ case 70:  // 'F' - cycle painter mode: fast -> normal -> float
 case 102: // 'f'
     painter_mode = (painter_mode + 1) % 3; // cycle 0->1->2->0...
     if (painter_mode == PAINTER_MODE_FAST) {
-        printf("Painter mode: FAST (tests 1-3 only)\n");
+        printf("Painter mode: FAST (simple face sorting only)\n");
     } else if (painter_mode == PAINTER_MODE_FIXED) {
         printf("Painter mode: NORMAL (full tests, Fixed32)\n");
     } else {
@@ -3036,7 +3106,8 @@ case 102: // 'f'
     }
     if (model != NULL) {
         printf("Reprocessing model with current mode...\n");
-        processModelFast(model, &params, filename);
+        // processModelFast(model, &params, filename);
+        goto bigloop;
     }
     goto loopReDraw;
 
@@ -3060,6 +3131,8 @@ case 112: // 'p'
 
             case 78:  // 'N' - load new model
             case 110: // 'n'
+                // Reset painter mode to FAST when loading a new model
+                painter_mode = PAINTER_MODE_FAST;
                 destroyModel3D(model);
                 goto newmodel;
 
@@ -3083,7 +3156,7 @@ case 112: // 'p'
                 printf("Arrow Up/Down: Increase/Decrease vertical angle\n");
                 printf("W/X: Increase/Decrease screen rotation angle\n");
                 printf("C: Toggle color palette display\n");
-                printf("F: Toggle fast painter (default: ON — tests 1-3 only)\n");
+                printf("F: Toggle fast painter (default: ON — simple face sorting only)\n");
                 printf("P: Toggle frame-only polygons (default: OFF)\n");
                 printf("E: Dump face equations to equ.csv (debug)\n");
                 printf("N: Load new model\n");
