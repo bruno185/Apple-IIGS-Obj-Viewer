@@ -64,11 +64,7 @@ static void project_vertex(ObsVertex* v, float* px, float* py) {
 // Pair comparator helpers and GS3Dp-like calculateFaceDepths + insertion-based Newell/Sancha
 static Model* g_model = NULL; static ObsVertex* g_obsv = NULL; // for comparator
 
-static int point_in_triangle(float px, float py, float Ax, float Ay, float Bx, float By, float Cx, float Cy) {
-    float v0x = Cx - Ax, v0y = Cy - Ay; float v1x = Bx - Ax, v1y = By - Ay; float v2x = px - Ax, v2y = py - Ay;
-    float den = v0x * v1y - v1x * v0y; if (fabsf(den) < 1e-9f) return 0;
-    float u = (v2x * v1y - v1x * v2y) / den; float v = (v0x * v2y - v2x * v0y) / den; return (u>=0 && v>=0 && (u+v)<=1.0f);
-}
+/* point_in_triangle removed to match ORCA/GS3Dp (no local per-triangle depth tests there) */
 
 // Quick comparator for initial qsort by z_mean descending (stable tie-breaker by index)
 static int compar_face_qsort(const void* pa, const void* pb) {
@@ -77,13 +73,8 @@ static int compar_face_qsort(const void* pa, const void* pb) {
     if (za > zb) return -1; if (za < zb) return 1; if (a < b) return -1; if (a > b) return 1; return 0;
 }
 
-static int face_depth_at_point_tri(int face_idx, float px, float py, float* depth) {
-    Face* f = &g_model->faces[face_idx]; if (f->count < 3) return 0;
-    for (int k=1;k<f->count-1;k++) {
-        int a=f->indices[0], b=f->indices[k], c=f->indices[k+1]; ObsVertex A=g_obsv[a], B=g_obsv[b], C=g_obsv[c]; float Ax,Ay,Bx,By,Cx,Cy; project_vertex(&A,&Ax,&Ay); project_vertex(&B,&Bx,&By); project_vertex(&C,&Cx,&Cy); if (!point_in_triangle(px,py,Ax,Ay,Bx,By,Cx,Cy)) continue;
-        float denom = (By - Cy)*(Ax - Cx) + (Cx - Bx)*(Ay - Cy); if (fabsf(denom) < 1e-9f) return 0; float wA = ((By - Cy)*(px - Cx) + (Cx - Bx)*(py - Cy))/denom; float wB = ((Cy - Ay)*(px - Cx) + (Ax - Cx)*(py - Cy))/denom; float wC = 1.0f - wA - wB; *depth = wA*A.yo + wB*B.yo + wC*C.yo; return 1; }
-    return 0;
-}
+/* face_depth_at_point_tri removed to match ORCA/GS3Dp (no local per-triangle depth tests there) */
+
 
 static void calculateFaceDepths(Model* model) {
     if (!model) return;
