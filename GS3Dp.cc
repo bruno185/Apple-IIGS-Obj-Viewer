@@ -850,8 +850,8 @@ void painter_newell_sancha(Model3D* model, int face_count) {
             all_same_side = 1;
             for (k=0; k<n2; k++) {
                     int v = faces->vertex_indices_buffer[offset2+k]-1;
-                    // test_value = a1*vtx->xo[v] + b1*vtx->yo[v] + c1*vtx->zo[v] + d1;
-                    test_value = a2*vtx->xo[v] + b2*vtx->yo[v] + c2*vtx->zo[v] + d2;
+                    test_value = a1*vtx->xo[v] + b1*vtx->yo[v] + c1*vtx->zo[v] + d1;
+                    //test_value = a2*vtx->xo[v] + b2*vtx->yo[v] + c2*vtx->zo[v] + d2;
                     if  (test_value > epsilon) side = 1;
                     else if (test_value < -epsilon) side = -1;
                     if (obs_side1 != side) { 
@@ -878,8 +878,8 @@ void painter_newell_sancha(Model3D* model, int face_count) {
             all_opposite_side = 1;
             for (k=0; k<n1; k++) {
                 int v = faces->vertex_indices_buffer[offset1+k]-1;
-                // test_value = a2*vtx->xo[v] + b2*vtx->yo[v] + c2*vtx->zo[v] + d2;
-                test_value = a1*vtx->xo[v] + b1*vtx->yo[v] + c1*vtx->zo[v] + d1;
+                test_value = a2*vtx->xo[v] + b2*vtx->yo[v] + c2*vtx->zo[v] + d2;
+                // test_value = a1*vtx->xo[v] + b1*vtx->yo[v] + c1*vtx->zo[v] + d1;
                 if  (test_value > epsilon) side = 1;
                 else if (test_value < -epsilon) side = -1;
                 if (obs_side2 == side) {
@@ -908,8 +908,8 @@ void painter_newell_sancha(Model3D* model, int face_count) {
                 for (k=0; k<n2; k++) {
                     int v = faces->vertex_indices_buffer[offset2+k]-1;
                     int side;
-                    test_value = a2*vtx->xo[v] + b2*vtx->yo[v] + c2*vtx->zo[v] + d2;
-                    // test_value = a1*vtx->xo[v] + b1*vtx->yo[v] + c1*vtx->zo[v] + d1;
+                    //test_value = a2*vtx->xo[v] + b2*vtx->yo[v] + c2*vtx->zo[v] + d2;
+                    test_value = a1*vtx->xo[v] + b1*vtx->yo[v] + c1*vtx->zo[v] + d1;
                     if  (test_value > epsilon) side = 1;
                     else side = -1;
                     if (obs_side1 == side) { 
@@ -943,8 +943,8 @@ void painter_newell_sancha(Model3D* model, int face_count) {
             for (k=0; k<n1; k++) {
                 int v = faces->vertex_indices_buffer[offset1+k]-1;
                 int side;
-                // test_value = a2*vtx->xo[v] + b2*vtx->yo[v] + c2*vtx->zo[v] + d2;
-                test_value = a1*vtx->xo[v] + b1*vtx->yo[v] + c1*vtx->zo[v] + d1;
+                test_value = a2*vtx->xo[v] + b2*vtx->yo[v] + c2*vtx->zo[v] + d2;
+                //test_value = a1*vtx->xo[v] + b1*vtx->yo[v] + c1*vtx->zo[v] + d1;
                 if  (test_value > epsilon) side = 1;
                 else side = -1;
                 if (obs_side2 != side) { 
