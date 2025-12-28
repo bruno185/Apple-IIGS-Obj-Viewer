@@ -34,10 +34,10 @@ Ce fichier répertorie les fonctions majeures trouvées dans `GS3Dp.cc` et donne
 - `int loadModel3D(Model3D* model, const char* filename)`
   - Charge un fichier OBJ (sommets + faces), met à jour les compteurs et calcule la bounding sphere.
 
-- `void backupModelCoords(Model3D* model)` / `void freeBackupModelCoords(Model3D* model)`
+
   - Sauvegarde / restaure ou libère une copie des coordonnées du modèle (utilisé pour transformations temporaires).
 
-- `void computeModelBoundingSphere(Model3D* model)`
+
   - Calcule le centre et rayon approximatif du modèle (non utilisé pour auto-distance automatique).
 
 ---
@@ -54,20 +54,13 @@ Ce fichier répertorie les fonctions majeures trouvées dans `GS3Dp.cc` et donne
 
 ## Projection et traitement géométrique
 
-- `void projectTo2D(VertexArrays3D* vtx, int angle_w_deg)`
+
   - Transforme les coordonnées observateur en coordonnées écran (projection perspective).
 
 - `void calculateFaceDepths(Model3D* model, Face3D* faces, int face_count)`
   - Calcule `z_min`, `z_max`, `z_mean`, les coefficients de plan (`a,b,c,d`), bounding box 2D et `display_flag` par face.
 
-- `void computeDistanceToFit(Model3D* model, ObserverParams* params)`
-  - (Helper) calcule la distance nécessaire pour faire tenir le modèle dans la vue.
 
-- `void autoScaleModel(Model3D* model, float target_max_dim, float min_scale, float max_scale, int center_flag)`
-  - Applique un redimensionnement automatique et éventuellement recentre le modèle.
-
-- `void revertAutoScaleModel(Model3D* model)`
-  - Restaure les coordonnées d'origine après un `autoScale`.
 
 - `void fitModelToView(Model3D* model, ObserverParams* params, float target_max_dim, float margin, float percentile, int center_flag)`
   - Procédure haut niveau pour adapter modèle et paramètres d'observateur afin de fit l'écran.

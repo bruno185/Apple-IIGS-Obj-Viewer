@@ -450,6 +450,13 @@ typedef struct {
     int auto_scaled;                  // 1 if auto-scaling has been applied
     int auto_centered;                // 1 if auto-scale used centering
 
+    /* Brute auto-fit suggestions (computed at vertex read) */
+    Fixed32 auto_suggested_distance;      // Suggested observer distance (Fixed32) computed as k * max_dim
+    Fixed32 auto_suggested_proj_scale;    // Suggested projection scale (Fixed32 pixels per projected unit)
+    Fixed32 auto_proj_scale;               // Applied projection scale (Fixed32) when auto-fit is used
+    int auto_fit_ready;                   // 1 if suggestions are ready
+    int auto_fit_applied;                 // 1 if suggestions were applied to the current view
+
     /* Optional backup of original coordinates to allow exact revert and dynamic scale adjustments */
     Fixed32 *orig_x;                   // NULL if no backup
     Fixed32 *orig_y;
@@ -459,11 +466,7 @@ typedef struct {
     int coord_buf_capacity;         // capacity in number of vertices for coord_buf
 
     /* Bounding sphere (computed once at load) */
-    float bs_cx;   // center x (float)
-    float bs_cy;   // center y
-    float bs_cz;   // center z
-    float bs_r;    // radius
-    int bs_valid;  // 0 = not computed, 1 = valid
+    /* Bounding sphere fields removed: no longer used */
 } Model3D;
 
 // ============================================================================
@@ -559,16 +562,13 @@ int readVertices(const char* filename, VertexArrays3D* vtx, int max_vertices, Mo
  * RESULTING COORDINATES:
  *   The x2d, y2d fields of the vertices contain the final screen coordinates.
  */
-void projectTo2D(VertexArrays3D* vtx, int angle_w_deg);
 
-/* Bounding sphere helpers */
-void computeModelBoundingSphere(Model3D* model);
+
+
 
 void getObserverParams(ObserverParams* params, Model3D* model);
 
-/* Auto-scaling helpers (non-destructive): allow automatic scaling on import with rollback */
-void autoScaleModel(Model3D* model, float target_max_dim, float min_scale, float max_scale, int center_flag);
-void revertAutoScaleModel(Model3D* model);
+/* Auto-scaling helpers (non-destructive) removed: functions deleted to reduce dead code */
 
 // Fit model to view using sphere metric with percentile trimming (non-destructive)
 void fitModelToView(Model3D* model, ObserverParams* params, float target_max_dim, float margin, float percentile, int center_flag);
@@ -577,9 +577,7 @@ void fitModelToView(Model3D* model, ObserverParams* params, float target_max_dim
 // Returns 1 if applied safely, 0 if caller should fall back to full recompute.
 
 
-// Internal helpers: backup/restore original vertex arrays
-void backupModelCoords(Model3D* model);
-void freeBackupModelCoords(Model3D* model);
+// Internal helpers: backup/restore original vertex arrays (removed)
 
 
 /**
@@ -1044,14 +1042,18 @@ Model3D* createModel3D(void) {
     model->orig_x = NULL;
     model->orig_y = NULL;
     model->orig_z = NULL;
+
+    /* Auto-fit suggestion defaults */
+    model->auto_suggested_distance = 0;
+    model->auto_suggested_proj_scale = 0;
+    model->auto_proj_scale = 0;
+    model->auto_fit_ready = 0;
+    model->auto_fit_applied = 0;
+
     // radius_buf removed: no automatic vertex radius buffer maintained
     model->coord_buf = NULL;
     model->coord_buf_capacity = 0;
-    model->bs_cx = 0.0f;
-    model->bs_cy = 0.0f;
-    model->bs_cz = 0.0f;
-    model->bs_r = 0.0f;
-    model->bs_valid = 0;
+    // bounding-sphere fields removed; nothing to initialize
     
     // Step 2: Allocate vertex arrays using malloc (handles bank crossing better)
     // Note: malloc() should handle bank boundaries better than NewHandle()
@@ -1429,40 +1431,9 @@ int loadModel3D(Model3D* model, const char* filename) {
         model->faces.face_count = fcount;
     }
     
-    // After loading vertices, compute bounding sphere for fast auto-fit
-    computeModelBoundingSphere(model);
+    // After loading vertices: bounding-sphere computations removed (auto-fit uses bbox-based heuristic)
     return 0;  // Success: model loaded (with or without faces)
 }
-
-// Compute bounding sphere (centroid + max radius) - O(n) once at load
-void computeModelBoundingSphere(Model3D* model) {
-    if (!model) return;
-    VertexArrays3D* vtx = &model->vertices;
-    int n = vtx->vertex_count;
-    if (n <= 0) { model->bs_valid = 0; return; }
-    double cx = 0.0, cy = 0.0, cz = 0.0;
-    for (int i = 0; i < n; ++i) {
-        cx += FIXED_TO_FLOAT(vtx->x[i]);
-        cy += FIXED_TO_FLOAT(vtx->y[i]);
-        cz += FIXED_TO_FLOAT(vtx->z[i]);
-    }
-    cx /= (double)n; cy /= (double)n; cz /= (double)n;
-    double max_r2 = 0.0;
-    for (int i = 0; i < n; ++i) {
-        double dx = FIXED_TO_FLOAT(vtx->x[i]) - cx;
-        double dy = FIXED_TO_FLOAT(vtx->y[i]) - cy;
-        double dz = FIXED_TO_FLOAT(vtx->z[i]) - cz;
-        double r2 = dx*dx + dy*dy + dz*dz;
-        if (r2 > max_r2) max_r2 = r2;
-    }
-    model->bs_cx = (float)cx;
-    model->bs_cy = (float)cy;
-    model->bs_cz = (float)cz;
-    model->bs_r = (float)sqrt(max_r2);
-    model->bs_valid = 1;
-}
-
-// Compute distance estimate directly from bounding sphere (cheap, O(1))
 
 // ============================================================================
 //                    USER INTERFACE FUNCTIONS
@@ -1494,46 +1465,34 @@ void getObserverParams(ObserverParams* params, Model3D* model) {
     printf("(Press ENTER to use default values - Distance will auto-fit the model)\n");
     
     // Input horizontal angle (rotation around Y)
-    printf("Horizontal angle (degrees, default 30): ");
+    printf("Horizontal angle (degrees, default %d): ", params->angle_h);
     if (fgets(input, sizeof(input), stdin) != NULL) {
         // Remove newline
         input[strcspn(input, "\n")] = 0;
-        if (strlen(input) == 0) {
-            params->angle_h = 30;     // Default value if ENTER (degrees)
-        } else {
+        if (strlen(input) != 0) {
             params->angle_h = atoi(input);  // Parse integer degrees from input
         }
-    } else {
-        params->angle_h = 30;         // Default value if error (degrees)
     }
     
     // Input vertical angle (rotation around X)  
-    printf("Vertical angle (degrees, default 20): ");
+    printf("Vertical angle (degrees, default %d): ", params->angle_v);
     if (fgets(input, sizeof(input), stdin) != NULL) {
         // Remove newline
         input[strcspn(input, "\n")] = 0;
-        if (strlen(input) == 0) {
-            params->angle_v = 20;     // Default value if ENTER (degrees)
-        } else {
+        if (strlen(input) != 0) {
             params->angle_v = atoi(input);  // Parse integer degrees from input
         }
-    } else {
-        params->angle_v = 20;         // Default value if error (degrees)
     }
     
 
     // Input screen rotation angle (final 2D rotation)
-    printf("Screen rotation angle (degrees, default 0): ");
+    printf("Screen rotation angle (degrees, default %d): ", params->angle_w);
     if (fgets(input, sizeof(input), stdin) != NULL) {
         // Remove newline
         input[strcspn(input, "\n")] = 0;
-        if (strlen(input) == 0) {
-            params->angle_w = 0;      // Default value if ENTER (degrees)
-        } else {
+        if (strlen(input) != 0) {
             params->angle_w = atoi(input);  // Parse integer degrees from input
         }
-    } else {
-        params->angle_w = 0;          // No rotation by default (degrees)
     }
 
     // Input observation distance (zoom/perspective).
@@ -1545,12 +1504,16 @@ void getObserverParams(ObserverParams* params, Model3D* model) {
         // Remove newline
         input[strcspn(input, "\n")] = 0;
         if (strlen(input) == 0) {
-            // User pressed ENTER: perform full auto-fit + centering using default target
-            if (model != NULL) {
-                float default_target = 200.0f;
-                fitModelToView(model, params, default_target, 0.92f, 0.99f, 1);
-
-                printf("Auto-fit/sphere applied (factor %.4f). Press 'r' to revert or +/- to adjust.\n", FIXED_TO_FLOAT(model->auto_scale));
+            // User pressed ENTER: if we have auto-fit suggestions from load, apply them; otherwise use default distance
+            if (model != NULL && model->auto_fit_ready) {
+                params->distance = model->auto_suggested_distance;
+                // Apply suggested projection scale to model so subsequent processing uses it
+                model->auto_proj_scale = model->auto_suggested_proj_scale;
+                model->auto_fit_applied = 1;
+                printf("Auto-fit applied (distance=%.4f proj_scale=%.2f). Use +/- to adjust.\n", FIXED_TO_FLOAT(model->auto_suggested_distance), FIXED_TO_FLOAT(model->auto_suggested_proj_scale));
+            } else if (model != NULL) {
+                // No precomputed suggestion: fallback to sensible default
+                params->distance = FLOAT_TO_FIXED(30.0);
             } else {
                 params->distance = FLOAT_TO_FIXED(30.0);
             }
@@ -1559,11 +1522,14 @@ void getObserverParams(ObserverParams* params, Model3D* model) {
             params->distance = FLOAT_TO_FIXED(atof(input)); // String->Fixed32 conversion
         }
     } else {
-        // fgets failed; default behavior: if we have a model, auto-fit, else fallback distance
-        if (model != NULL) {
-            float default_target = 200.0f;
-            fitModelToView(model, params, default_target, 0.92f, 0.99f, 1);
-            printf("Auto-fit/sphere applied (factor %.4f). Press 'r' to revert or +/- to adjust.\n", FIXED_TO_FLOAT(model->auto_scale));
+        // fgets failed; default behavior: if we have a model, apply precomputed auto-fit suggestions, else fallback distance
+        if (model != NULL && model->auto_fit_ready) {
+            params->distance = model->auto_suggested_distance;
+            model->auto_proj_scale = model->auto_suggested_proj_scale;
+            model->auto_fit_applied = 1;
+            printf("Auto-fit applied (distance=%.4f proj_scale=%.2f). Use +/- to adjust.\n", FIXED_TO_FLOAT(model->auto_suggested_distance), FIXED_TO_FLOAT(model->auto_suggested_proj_scale));
+        } else if (model != NULL) {
+            params->distance = FLOAT_TO_FIXED(30.0);
         } else {
             params->distance = FLOAT_TO_FIXED(30.0);        // Default distance: balanced view (Fixed Point)
         }
@@ -1600,7 +1566,7 @@ void processModelFast(Model3D* model, ObserverParams* params, const char* filena
     const Fixed32 sin_h_cos_v = FIXED_MUL_64(sin_h, cos_v);
     const Fixed32 cos_h_sin_v = FIXED_MUL_64(cos_h, sin_v);
     const Fixed32 sin_h_sin_v = FIXED_MUL_64(sin_h, sin_v);
-    const Fixed32 scale = INT_TO_FIXED(100); // avoid float conversion
+    Fixed32 scale = (model->auto_proj_scale && model->auto_fit_applied) ? model->auto_proj_scale : INT_TO_FIXED(100); // allow auto-fit to control projection scale when applied
     const Fixed32 centre_x_f = INT_TO_FIXED(CENTRE_X);
     const Fixed32 centre_y_f = INT_TO_FIXED(CENTRE_Y);
     Fixed32 distance = params->distance;
@@ -1706,7 +1672,7 @@ void processModelWireframe(Model3D* model, ObserverParams* params, const char* f
     const Fixed32 sin_h_cos_v = FIXED_MUL_64(sin_h, cos_v);
     const Fixed32 cos_h_sin_v = FIXED_MUL_64(cos_h, sin_v);
     const Fixed32 sin_h_sin_v = FIXED_MUL_64(sin_h, sin_v);
-    const Fixed32 scale = INT_TO_FIXED(100);
+    Fixed32 scale = (model->auto_proj_scale && model->auto_fit_applied) ? model->auto_proj_scale : INT_TO_FIXED(100);
     const Fixed32 centre_x_f = INT_TO_FIXED(CENTRE_X);
     const Fixed32 centre_y_f = INT_TO_FIXED(CENTRE_Y);
     const Fixed32 distance = params->distance;
@@ -1868,7 +1834,60 @@ int readVertices(const char* filename, VertexArrays3D* vtx, int max_vertices, Mo
             vtx->z[i] = FIXED_SUB(vtx->z[i], owner->auto_center_z);
         }
         owner->auto_centered = 1; // indicate coords were centered
+
+        // --- Brute auto-fit suggestion (Fixed32) ---
+        // Compute model-space max dimension (bbox metric) and suggest a distance = k * max_dim
+        Fixed32 dx = FIXED_SUB(xmax, xmin);
+        Fixed32 dy = FIXED_SUB(ymax, ymin);
+        Fixed32 dz = FIXED_SUB(zmax, zmin);
+        Fixed32 max_dim = dx;
+        if (dy > max_dim) max_dim = dy;
+        if (dz > max_dim) max_dim = dz;
+        // k = 3 (user-specified)
+        owner->auto_suggested_distance = FIXED_MUL_64(max_dim, INT_TO_FIXED(3));
+
+        // Compute projected bounds using default observer angles (30,20,0) to suggest projection scale
+        int ah = 30, av = 20, aw = 0;
+        Fixed32 cos_h = cos_deg_int(ah), sin_h = sin_deg_int(ah);
+        Fixed32 cos_v = cos_deg_int(av), sin_v = sin_deg_int(av);
+        const Fixed32 cos_h_cos_v = FIXED_MUL_64(cos_h, cos_v);
+        const Fixed32 sin_h_cos_v = FIXED_MUL_64(sin_h, cos_v);
+        const Fixed32 cos_h_sin_v = FIXED_MUL_64(cos_h, sin_v);
+        const Fixed32 sin_h_sin_v = FIXED_MUL_64(sin_h, sin_v);
+
+        float pxmin = 1e30f, pxmax = -1e30f, pymin = 1e30f, pymax = -1e30f;
+        for (int i = 0; i < vertex_count; ++i) {
+            Fixed32 x = vtx->x[i]; Fixed32 y = vtx->y[i]; Fixed32 z = vtx->z[i];
+            Fixed32 term1 = FIXED_MUL_64(x, cos_h_cos_v);
+            Fixed32 term2 = FIXED_MUL_64(y, sin_h_cos_v);
+            Fixed32 term3 = FIXED_MUL_64(z, sin_v);
+            Fixed32 zo = FIXED_ADD(FIXED_SUB(FIXED_SUB(FIXED_NEG(term1), term2), term3), owner->auto_suggested_distance);
+            if (zo > 0) {
+                Fixed32 xo = FIXED_ADD(FIXED_NEG(FIXED_MUL_64(x, sin_h)), FIXED_MUL_64(y, cos_h));
+                Fixed32 yo = FIXED_ADD(FIXED_SUB(FIXED_NEG(FIXED_MUL_64(x, cos_h_sin_v)), FIXED_MUL_64(y, sin_h_sin_v)), FIXED_MUL_64(z, cos_v));
+                float px = FIXED_TO_FLOAT(xo) / FIXED_TO_FLOAT(zo);
+                float py = FIXED_TO_FLOAT(yo) / FIXED_TO_FLOAT(zo);
+                if (px < pxmin) pxmin = px;
+                if (px > pxmax) pxmax = px;
+                if (py < pymin) pymin = py;
+                if (py > pymax) pymax = py;
+            }
+        }
+        // Compute projection scale (pixels per projected unit) to fit viewport with margin m
+        float margin = 0.9f;
+        float winw = (float)(CENTRE_X * 2);
+        float winh = (float)(CENTRE_Y * 2);
+        float s = 100.0f; // fallback
+        if (pxmax > pxmin && pymax > pymin) {
+            float s1 = (winw * margin) / (pxmax - pxmin);
+            float s2 = (winh * margin) / (pymax - pymin);
+            s = (s1 < s2) ? s1 : s2;
+        }
+        owner->auto_suggested_proj_scale = FLOAT_TO_FIXED(s);
+        owner->auto_fit_ready = 1;
+
         printf("[INFO] readVertices: applied bbox center cx=%.4f cy=%.4f cz=%.4f\n", FIXED_TO_FLOAT(owner->auto_center_x), FIXED_TO_FLOAT(owner->auto_center_y), FIXED_TO_FLOAT(owner->auto_center_z));
+        printf("[INFO] readVertices: brute auto-fit suggestion: distance=%.4f proj_scale=%.2f\n", FIXED_TO_FLOAT(owner->auto_suggested_distance), s);
     }
 
     // printf("\n\nAnalyse terminee. %d lignes lues.\n", line_number - 1);
@@ -1990,32 +2009,8 @@ int readFaces_model(const char* filename, Model3D* model) {
     return face_count;
 }
 
-// Function to project 3D coordinates onto 2D screen - FIXED POINT VERSION
-void projectTo2D(VertexArrays3D* vtx, int angle_w_deg) {
-    int i;
-    Fixed32 cos_w, sin_w;
-    Fixed32 x2d_temp, y2d_temp;
-    cos_w = cos_deg_int(angle_w_deg);
-    sin_w = sin_deg_int(angle_w_deg);
-    const Fixed32 scale = INT_TO_FIXED(100);
-    const Fixed32 centre_x_f = INT_TO_FIXED(CENTRE_X);
-    const Fixed32 centre_y_f = INT_TO_FIXED(CENTRE_Y);
-
-    for (i = 0; i < vtx->vertex_count; i++) {
-        if (vtx->zo[i] > 0) {
-            Fixed32 xo = vtx->xo[i];
-            Fixed32 yo = vtx->yo[i];
-            Fixed32 inv_zo = FIXED_DIV_64(scale, vtx->zo[i]);
-            x2d_temp = FIXED_ADD(FIXED_MUL_64(xo, inv_zo), centre_x_f);
-            y2d_temp = FIXED_SUB(centre_y_f, FIXED_MUL_64(yo, inv_zo));
-            vtx->x2d[i] = FIXED_ROUND_TO_INT(FIXED_ADD(FIXED_SUB(FIXED_MUL_64(cos_w, FIXED_SUB(x2d_temp, centre_x_f)), FIXED_MUL_64(sin_w, FIXED_SUB(centre_y_f, y2d_temp))), centre_x_f));
-            vtx->y2d[i] = FIXED_ROUND_TO_INT(FIXED_SUB(centre_y_f, FIXED_ADD(FIXED_MUL_64(sin_w, FIXED_SUB(x2d_temp, centre_x_f)), FIXED_MUL_64(cos_w, FIXED_SUB(centre_y_f, y2d_temp)))));
-        } else {
-            vtx->x2d[i] = -1;
-            vtx->y2d[i] = -1;
-        }
-    }
-}
+// projectTo2D removed: The helper projection function was unused and is removed to reduce dead code.
+// If a standalone projection helper is required again in the future, reintroduce it with unit tests and clear usage sites.
 
 /**
  * CALCULATING MINIMUM FACE DEPTHS AND VISIBILITY FLAGS
@@ -2214,89 +2209,15 @@ void dumpFaceEquationsCSV(Model3D* model, const char* csv_filename) {
 /* Vertex-based distance helpers removed */
 
 // ==============================================================
-// Auto-scaling helpers
-// Auto-scaling removed per request: functions are now no-ops for safety.
+// Auto-scaling helpers removed
+// These functions were removed to reduce dead code. Reverting auto-scale is performed
+// inline where needed (keeps behavior but avoids maintaining unused public API).
 // ==============================================================
-void autoScaleModel(Model3D* model, float target_max_dim, float min_scale, float max_scale, int center_flag) {
-    // Do not modify model coordinates or distance; just clear any auto-scale flags
-    if (!model) return;
-    model->auto_scaled = 0;
-    model->auto_centered = 0;
-    model->auto_scale = FIXED_ONE;
-    (void)target_max_dim; (void)min_scale; (void)max_scale; (void)center_flag;
-}
-
-void revertAutoScaleModel(Model3D* model) {
-    if (model == NULL) return;
-    VertexArrays3D* vtx = &model->vertices;
-    int n = vtx->vertex_count;
-    if (n <= 0) { model->auto_scaled = 0; model->auto_centered = 0; model->auto_scale = FIXED_ONE; return; }
-
-    // If we have an exact backup, restore it for perfect revert
-    if (model->orig_x && model->orig_y && model->orig_z) {
-        for (int i = 0; i < n; ++i) {
-            vtx->x[i] = model->orig_x[i];
-            vtx->y[i] = model->orig_y[i];
-            vtx->z[i] = model->orig_z[i];
-        }
-        freeBackupModelCoords(model);
-    } else {
-        // Fallback: inverse the applied scale+center using stored params
-        Fixed32 scale = model->auto_scale;
-        if (scale != 0) {
-            for (int i = 0; i < n; ++i) {
-                vtx->x[i] = FIXED_ADD(FIXED_DIV_64(vtx->x[i], scale), model->auto_center_x);
-                vtx->y[i] = FIXED_ADD(FIXED_DIV_64(vtx->y[i], scale), model->auto_center_y);
-                vtx->z[i] = FIXED_ADD(FIXED_DIV_64(vtx->z[i], scale), model->auto_center_z);
-            }
-        }
-    }
-
-    /* Ensure meta flags and scale are cleared after revert so a future auto-fit starts from
-       a clean state and does not attempt to double-revert or apply inverse scaling. */
-    model->auto_scaled = 0;
-    model->auto_centered = 0;
-    model->auto_scale = FIXED_ONE;
-
-    /* Recompute the bounding sphere from the (restored) model coordinates so that
-       distance estimations and subsequent auto-fit operations are based on current data. */
-    computeModelBoundingSphere(model);
-}
 
 
-void backupModelCoords(Model3D* model) {
-    if (model == NULL) return;
-    VertexArrays3D* vtx = &model->vertices;
-    int n = vtx->vertex_count;
-    if (n <= 0) return;
 
-    // If previous backup existed, free it first
-    if (model->orig_x) { free(model->orig_x); model->orig_x = NULL; }
-    if (model->orig_y) { free(model->orig_y); model->orig_y = NULL; }
-    if (model->orig_z) { free(model->orig_z); model->orig_z = NULL; }
-
-    model->orig_x = (Fixed32*)malloc(n * sizeof(Fixed32));
-    model->orig_y = (Fixed32*)malloc(n * sizeof(Fixed32));
-    model->orig_z = (Fixed32*)malloc(n * sizeof(Fixed32));
-    if (!model->orig_x || !model->orig_y || !model->orig_z) {
-        // If allocation failed, ensure a consistent state and bail out
-        freeBackupModelCoords(model);
-        return;
-    }
-
-    for (int i = 0; i < n; ++i) {
-        model->orig_x[i] = vtx->x[i];
-        model->orig_y[i] = vtx->y[i];
-        model->orig_z[i] = vtx->z[i];
-    }
-}
-
-void freeBackupModelCoords(Model3D* model) {
-    if (model == NULL) return;
-    if (model->orig_x) { free(model->orig_x); model->orig_x = NULL; }
-    if (model->orig_y) { free(model->orig_y); model->orig_y = NULL; }
-    if (model->orig_z) { free(model->orig_z); model->orig_z = NULL; }
-}
+// backupModelCoords / freeBackupModelCoords removed: backup functionality is no longer provided.
+// If we later need non-destructive transforms, reintroduce a clear backup API with tests.
 
 // Fit model to view using sphere-based metric with percentile trimming
 void fitModelToView(Model3D* model, ObserverParams* params, float target_max_dim, float margin, float percentile, int center_flag) {
@@ -2576,7 +2497,17 @@ void DoText() {
             break;
         }
 
-        // Get observer parameters
+        // Initialize observer params defaults and apply auto-fit at load when available
+        params.angle_h = 30; params.angle_v = 20; params.angle_w = 0;
+        if (model != NULL && model->auto_fit_ready) {
+            params.distance = model->auto_suggested_distance;
+            model->auto_proj_scale = model->auto_suggested_proj_scale;
+            model->auto_fit_applied = 1;
+            printf("Auto-fit applied at load (distance=%.4f proj_scale=%.2f)\n", FIXED_TO_FLOAT(model->auto_suggested_distance), FIXED_TO_FLOAT(model->auto_suggested_proj_scale));
+        } else {
+            params.distance = FLOAT_TO_FIXED(30.0);
+        }
+        // Get observer parameters (user can override defaults by typing values)
         getObserverParams(&params, model);
 
 
@@ -2654,23 +2585,25 @@ void DoText() {
                 keypress();
                 goto loopReDraw;
 
-            case 82:  // 'R' - revert auto-scale
+            case 82:  // 'R' - revert auto-scale / auto-fit
             case 114: // 'r'
-                if (model != NULL && model->auto_scaled) {
-                    revertAutoScaleModel(model);
-                    printf("Auto-scale reverted.\n");
-                } else {
-                    printf("No auto-scale to revert.\n");
-                }
+                /* Revert disabled: no action performed on 'r'/'R' */
                 goto bigloop;
 
             case 43:  // '+' - ensure auto-fit then increase distance by 10%
             case 61:  // '=' also acts as '+' on some keyboards
                 if (model != NULL) {
-                    if (!model->auto_scaled) {
-                        float default_target = 200.0f;
-                        fitModelToView(model, &params, default_target, 0.92f, 0.99f, 1);
-                        printf("Auto-fit applied (factor %.4f). Press 'r' to revert or +/- to adjust distance.\n", FIXED_TO_FLOAT(model->auto_scale));
+                    if (!model->auto_fit_applied) {
+                        if (model->auto_fit_ready) {
+                            params.distance = model->auto_suggested_distance;
+                            model->auto_proj_scale = model->auto_suggested_proj_scale;
+                            model->auto_fit_applied = 1;
+                            printf("Auto-fit applied (distance=%.4f proj_scale=%.2f). Use +/- to adjust distance.\n", FIXED_TO_FLOAT(model->auto_suggested_distance), FIXED_TO_FLOAT(model->auto_suggested_proj_scale));
+                        } else {
+                            float default_target = 200.0f;
+                            fitModelToView(model, &params, default_target, 0.92f, 0.99f, 1);
+                            printf("Auto-centered (no precomputed suggestion). Use +/- to adjust distance.\n");
+                        }
                     }
                     params.distance = params.distance + (params.distance / 10);
                     printf("Distance increased -> %.2f\n", FIXED_TO_FLOAT(params.distance));
@@ -2681,10 +2614,17 @@ void DoText() {
 
             case 45:  // '-' - ensure auto-fit then decrease distance by 10%
                 if (model != NULL) {
-                    if (!model->auto_scaled) {
-                        float default_target = 200.0f;
-                        fitModelToView(model, &params, default_target, 0.92f, 0.99f, 1);
-                        printf("Auto-fit applied (factor %.4f). Press 'r' to revert or +/- to adjust distance.\n", FIXED_TO_FLOAT(model->auto_scale));
+                    if (!model->auto_fit_applied) {
+                        if (model->auto_fit_ready) {
+                            params.distance = model->auto_suggested_distance;
+                            model->auto_proj_scale = model->auto_suggested_proj_scale;
+                            model->auto_fit_applied = 1;
+                            printf("Auto-fit applied (distance=%.4f proj_scale=%.2f). Use +/- to adjust distance.\n", FIXED_TO_FLOAT(model->auto_suggested_distance), FIXED_TO_FLOAT(model->auto_suggested_proj_scale));
+                        } else {
+                            float default_target = 200.0f;
+                            fitModelToView(model, &params, default_target, 0.92f, 0.99f, 1);
+                            printf("Auto-centered (no precomputed suggestion). Use +/- to adjust distance.\n");
+                        }
                     }
                     params.distance = params.distance - (params.distance / 10);
                     printf("Distance decreased -> %.2f\n", FIXED_TO_FLOAT(params.distance));
@@ -2783,7 +2723,7 @@ case 112: // 'p'
                 printf("===================================\n\n");
                 printf("Space: Display model info\n");
                 printf("A/Z: Increase/Decrease distance\n");
-                printf("+/-: Apply auto-fit if none, then increase/decrease distance (use 'r' to revert auto-fit)\n");
+                printf("+/-: Apply auto-fit if none, then increase/decrease distance\n");
                 printf("K: Edit angles/distance (ENTER may trigger auto-fit)\n");
                 printf("Arrow Left/Right: Decrease/Increase horizontal angle\n");
                 printf("Arrow Up/Down: Increase/Decrease vertical angle\n");

@@ -164,8 +164,7 @@ static void render_frame(HWND hwnd) {
     // background
     HBRUSH bg = CreateSolidBrush(RGB(16,16,16)); FillRect(memdc, &(RECT){0,0,winw,winh}, bg); DeleteObject(bg);
 
-    // Test drawings removed for production; no test shapes are drawn in release UI.
-    /* removed */
+
 
     // diagnostics: write projection bbox/scale and sample vertices to log
     {

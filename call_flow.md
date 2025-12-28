@@ -26,7 +26,6 @@
     - 🔧 **`fitModelToView(model, params, target_max_dim, margin, percentile, center_flag)`** — fits model using sampled radii
       - sample vertices (up to `max_samples`) to compute centroid + squared radii
       - quickselect percentile radius → compute scale and center
-      - `backupModelCoords(model)` and *apply scale+center* to vertices (non-destructive)
       - update `model->auto_scale`, `auto_center_*`, `auto_scaled`
       - update model bounding sphere (`bs_cx/bs_cy/bs_cz/bs_r`) accordingly — now kept in sync **O(1)**
       - Distance estimation is disabled here; `params->distance` must be set explicitly by the user
@@ -54,7 +53,7 @@
 ### UI / Input handling
 
 - `startgraph()` / render / `endgraph()` / `DoText()` / optional `DoColor()`
-- Keys: Space (info), N (new model), Arrows / A Z (angles/distance), `r` (revert autoscale), `K` (edit angles/distance without reloading model), `+`/`-` (adjust autoscale)
+- Keys: Space (info), N (new model), Arrows / A Z (angles/distance), `K` (edit angles/distance without reloading model), `+`/`-` (adjust autoscale)
 - `K` invokes `getObserverParams(&params, model)` interactively and applies new angles/distance without requiring a reload.
 - `+`/`-` behavior: if the model is not yet auto-scaled, these keys first perform an **auto-fit** (`fitModelToView()`); they then increase or decrease the current `params->distance` and update `model->auto_scale`. Automatic recomputation via bounding-sphere is disabled; distance adjustments are manual. The action prints a short message (e.g., "Distance increased" / "Distance decreased").
 
@@ -62,10 +61,10 @@
 
 ## Supporting / fallback functions (short purpose)
 
-- 🔧 **`projectTo2D()`** — standalone projection helper (used in places)
-- 🔧 **`computeModelBoundingSphere(model)`** — O(n) at load, stores `bs_*` in `Model3D`
-- 🔧 **`autoScaleModel()` / `revertAutoScaleModel()`** — non-destructive scaling helpers (backup + apply + revert)
-- 🔧 **`backupModelCoords()` / `freeBackupModelCoords()`** — support for non-destructive transforms
+
+- Bounding-sphere metric removed; auto-fit uses bbox heuristic (O(n) at load remains but is simpler)
+
+- 🔧 **Non-destructive backup support removed** — per-vertex backup API was removed to simplify flow
 - 🔧 **`processModelWireframe(model, &params, filename)`** — lightweight wireframe processing (transform & project only) used for fast wireframe/frame-only rendering
 - 🔧 **`destroyModel3D(Model3D* model)`** — frees all memory allocated by `createModel3D()`; must be called to avoid leaks
 - 🔧 **`readVertices()` / `readFaces_model()`** — file parsing helpers
@@ -93,12 +92,10 @@
 - 🔧 `void processModelWireframe(Model3D* model, ObserverParams* params, const char* filename)` — `GS3Dp.cc:1603`
 - 🔧 `int readVertices(const char* filename, VertexArrays3D* vtx, int max_vertices)` — `GS3Dp.cc:1706`
 - 🔧 `int readFaces_model(const char* filename, Model3D* model)` — `GS3Dp.cc:1760`
-- 🔧 `void projectTo2D(VertexArrays3D* vtx, int angle_w_deg)` — `GS3Dp.cc:1875`
+
 - 🔧 `void calculateFaceDepths(Model3D* model, Face3D* faces, int face_count)` — `GS3Dp.cc:1940`
-- 🔧 `void autoScaleModel(Model3D* model, float target_max_dim, float min_scale, float max_scale, int center_flag)` — `GS3Dp.cc:2112`
-- 🔧 `void revertAutoScaleModel(Model3D* model)` — `GS3Dp.cc:2177`
-- 🔧 `void backupModelCoords(Model3D* model)` — `GS3Dp.cc:2207`
-- 🔧 `void freeBackupModelCoords(Model3D* model)` — `GS3Dp.cc:2234`
+
+
 - 🔧 `void fitModelToView(Model3D* model, ObserverParams* params, float target_max_dim, float margin, float percentile, int center_flag)` — `GS3Dp.cc:2243`
 - 🔧 `void drawPolygons(Model3D* model, int* vertex_count, int face_count, int vertex_count_total)` — `GS3Dp.cc:2516`
 - 🔧 `int main()` — `GS3Dp.cc:2689`
