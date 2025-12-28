@@ -1123,7 +1123,16 @@ void painter_newell_sancha_float(Model3D* model, int face_count) {
 
             // Test 1 : Depth overlap (float)
             if (f_z_max[f2] <= f_z_min[f1]) continue;
-            if (f_z_max[f1] <= f_z_min[f2]) goto do_swap_float;
+            if (f_z_max[f1] <= f_z_min[f2]) {
+                int tmp = order[i]; order[i] = order[i+1]; order[i+1] = tmp;
+                swapped_local = 1;
+                if (ordered_pairs != NULL && ordered_pairs_count < ordered_pairs_capacity) {
+                    ordered_pairs[ordered_pairs_count].face1 = f2;
+                    ordered_pairs[ordered_pairs_count].face2 = f1;
+                    ordered_pairs_count++;
+                }
+                continue;
+            }
 
             // Test 2 : X overlap
             int minx1 = f_minx[f1], maxx1 = f_maxx[f1], miny1 = f_miny[f1], maxy1 = f_maxy[f1];
@@ -1150,7 +1159,7 @@ void painter_newell_sancha_float(Model3D* model, int face_count) {
             int all_same_side = 1;
             for (k = 0; k < n2; ++k) {
                 int v = faces->vertex_indices_buffer[offset2 + k] - 1;
-                test_val = a2 * xo[v] + b2 * yo[v] + c2 * zo[v] + d2;
+                test_val = a1 * xo[v] + b1 * yo[v] + c1 * zo[v] + d1;  // plane of f1
                 int side = (test_val > epsilon_f) ? 1 : ((test_val < -epsilon_f) ? -1 : 0);
                 if (side != obs_side1) { all_same_side = 0; break; }
             }
@@ -1162,50 +1171,25 @@ void painter_newell_sancha_float(Model3D* model, int face_count) {
             if (d2 > epsilon_f) obs_side2 = 1; else if (d2 < -epsilon_f) obs_side2 = -1; else goto skipT5_float;
             for (k = 0; k < n1; ++k) {
                 int v = faces->vertex_indices_buffer[offset1 + k] - 1;
-                test_val = a1 * xo[v] + b1 * yo[v] + c1 * zo[v] + d1;
-                int side = (test_val > epsilon_f) ? 1 : -1;
+                test_val = a2 * xo[v] + b2 * yo[v] + c2 * zo[v] + d2; // plane of f2
+                int side = (test_val > epsilon_f) ? 1 : ((test_val < -epsilon_f) ? -1 : 0);
                 if (side == obs_side2) { all_opposite_side = 0; break; }
             }
             if (all_opposite_side) continue;
             skipT5_float: ;
 
-            // Test 6
-            if (d1 > epsilon_f) obs_side1 = 1; else if (d1 < -epsilon_f) obs_side1 = -1; else goto skipT6_float;
-            all_opposite_side = 1;
-            for (k = 0; k < n2; ++k) {
-                int v = faces->vertex_indices_buffer[offset2 + k] - 1;
-                test_val = a2 * xo[v] + b2 * yo[v] + c2 * zo[v] + d2;
-                int side = (test_val > epsilon_f) ? 1 : -1;
-                if (side == obs_side1) { all_opposite_side = 0; break; }
-            }
-            if (all_opposite_side == 0) continue;
-            else goto do_swap_float;
-            skipT6_float: ;
-
-            // Test 7
-            if (d2 > epsilon_f) obs_side2 = 1; else if (d2 < -epsilon_f) obs_side2 = -1; else goto skipT7_float;
-            all_same_side = 1;
-            for (k = 0; k < n1; ++k) {
-                int v = faces->vertex_indices_buffer[offset1 + k] - 1;
-                test_val = a1 * xo[v] + b1 * yo[v] + c1 * zo[v] + d1;
-                int side = (test_val > epsilon_f) ? 1 : -1;
-                if (side != obs_side2) { all_same_side = 0; break; }
-            }
-            if (all_same_side == 0) goto skipT7_float;
-            else goto do_swap_float;
-
-            do_swap_float: {
+            // Si on arrive ici, les tests 1..5 n'ont pas conclu :
+            // appliquer l'algorithme original de Newell/Newell/Sancha
+            // => échanger les faces (swap) et enregistrer la paire
+            {
                 int tmp = order[i]; order[i] = order[i+1]; order[i+1] = tmp;
                 swapped_local = 1;
-                // record pair only when swap occurs
                 if (ordered_pairs != NULL && ordered_pairs_count < ordered_pairs_capacity) {
                     ordered_pairs[ordered_pairs_count].face1 = f2;
                     ordered_pairs[ordered_pairs_count].face2 = f1;
                     ordered_pairs_count++;
                 }
             }
-
-            skipT7_float: ;
 
         } // end for
     } while (swapped_local);
