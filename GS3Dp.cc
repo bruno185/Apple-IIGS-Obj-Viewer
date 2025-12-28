@@ -74,9 +74,13 @@ int readVertices_last_count = 0;
 static Handle globalPolyHandle = NULL;
 static int poly_handle_locked = 0;  // Track lock state
 static int framePolyOnly = 0; // Toggle: 1 = frame-only, 0 = fill+frame (default: filled polygons)
-static int painterFastMode = 1; // Toggle: 1 = fast painter (tests 1-3 only) (default: ON)
+#define PAINTER_MODE_FAST 0
+#define PAINTER_MODE_FIXED 1
+#define PAINTER_MODE_FLOAT 2
 
-// Runtime toggle: if set, use float implementation that mirrors Windows numeric behaviour exactly
+static int painter_mode = PAINTER_MODE_FAST; // 0=fast,1=fixed,2=float (cycle with 'F')
+
+// Runtime toggle kept for compatibility; main() may set this and we propagate to painter_mode
 static int use_float_painter = 0;
 
 // Comparator for float z_mean ordering (used by painter_newell_sancha_float)
@@ -1859,15 +1863,22 @@ void processModelFast(Model3D* model, ObserverParams* params, const char* filena
 
     // painter_newell_sancha (remplace sortFacesByDepth)
     t_start = GetTick();
-    if (painterFastMode) painter_newell_sancha_fast(model, model->faces.face_count);
-    else painter_newell_sancha(model, model->faces.face_count);
+    if (painter_mode == PAINTER_MODE_FAST) {
+        painter_newell_sancha_fast(model, model->faces.face_count);
+    } else if (painter_mode == PAINTER_MODE_FIXED) {
+        painter_newell_sancha(model, model->faces.face_count);
+    } else {
+        // PAINTER_MODE_FLOAT
+        painter_newell_sancha_float(model, model->faces.face_count);
+    }
     t_end = GetTick();
 
     if (!PERFORMANCE_MODE)
     {
         long elapsed = t_end - t_start;
         double ms = ((double)elapsed * 1000.0) / 60.0; // 60 ticks per second
-        printf("[TIMING] %s: %ld ticks (%.2f ms)\n", painterFastMode ? "painter_newell_sancha_fast" : "painter_newell_sancha", elapsed, ms);
+        const char* pname = (painter_mode==PAINTER_MODE_FAST)?"painter_newell_sancha_fast":(painter_mode==PAINTER_MODE_FIXED?"painter_newell_sancha":"painter_newell_sancha_float");
+        printf("[TIMING] %s: %ld ticks (%.2f ms)\n", pname, elapsed, ms);
         keypress();
     }
 }
@@ -2683,7 +2694,10 @@ void DoText() {
         /* Optional: enable float painter to reproduce Windows numeric behaviour exactly via env var USE_FLOAT_PAINTER=1 */
         {
             const char* tmp = getenv("USE_FLOAT_PAINTER");
-            if (tmp && atoi(tmp) != 0) use_float_painter = 1;
+            if (tmp && atoi(tmp) != 0) {
+                use_float_painter = 1;
+                painter_mode = PAINTER_MODE_FLOAT;
+            }
         }
 
         /* Smoke-test mode: run a small non-interactive test to validate auto-fit and key behavior */
@@ -2947,10 +2961,16 @@ void DoText() {
                 colorpalette ^= 1; // Toggle between 0 and 1
                 goto loopReDraw;
 
-case 70:  // 'F' - toggle fast/normal painter
+case 70:  // 'F' - cycle painter mode: fast -> normal -> float
 case 102: // 'f'
-    painterFastMode ^= 1;
-    printf("Fast painter: %s\n", painterFastMode ? "ON (tests 1-3 only)" : "OFF (full tests)");
+    painter_mode = (painter_mode + 1) % 3; // cycle 0->1->2->0...
+    if (painter_mode == PAINTER_MODE_FAST) {
+        printf("Painter mode: FAST (tests 1-3 only)\n");
+    } else if (painter_mode == PAINTER_MODE_FIXED) {
+        printf("Painter mode: NORMAL (full tests, Fixed32)\n");
+    } else {
+        printf("Painter mode: FLOAT (float-based painter)\n");
+    }
     if (model != NULL) {
         printf("Reprocessing model with current mode...\n");
         processModelFast(model, &params, filename);
