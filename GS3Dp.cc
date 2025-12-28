@@ -58,6 +58,7 @@
 #include <memory.h>     // Advanced memory management (NewHandle, etc.)
 #include <window.h>     // Window management
 #include <orca.h>       // ORCA specific functions (startgraph, etc.)
+#include <stdint.h>      // uint32_t, etc.
 
 
 #pragma memorymodel 1
@@ -82,6 +83,90 @@ static int painter_mode = PAINTER_MODE_FAST; // 0=fast,1=fixed,2=float (cycle wi
 
 // Runtime toggle kept for compatibility; main() may set this and we propagate to painter_mode
 static int use_float_painter = 0;
+
+// --- Reusable scratch buffers for float painter to avoid per-call malloc/free ---
+static float *float_xo = NULL, *float_yo = NULL, *float_zo = NULL; static int float_vcap = 0;
+static float *f_z_min_buf = NULL, *f_z_max_buf = NULL, *f_z_mean_buf = NULL;
+static int *f_minx_buf = NULL, *f_maxx_buf = NULL, *f_miny_buf = NULL, *f_maxy_buf = NULL;
+static int *f_display_buf = NULL;
+static float *f_plane_a_buf = NULL, *f_plane_b_buf = NULL, *f_plane_c_buf = NULL, *f_plane_d_buf = NULL;
+static int *order_buf = NULL; static int order_cap = 0;
+
+// Hash table for ordered pairs (stores pair key = (f1<<16)|f2). Uses 0xFFFFFFFF as empty sentinel
+static uint32_t *ordered_pairs_hash = NULL; static int ordered_pairs_hash_cap = 0; static const uint32_t ordered_pairs_sentinel = 0xFFFFFFFFu;
+static int ordered_pairs_seen_count = 0;
+
+// Utility: next power of two
+static int next_pow2_int(int x) { int p = 1; while (p < x) p <<= 1; return p; }
+
+static void ensure_vertex_capacity(int vcount) {
+    if (float_vcap >= vcount) return;
+    int newcap = (vcount + 15) & ~15; // align
+    float_xo = (float*)realloc(float_xo, sizeof(float) * newcap);
+    float_yo = (float*)realloc(float_yo, sizeof(float) * newcap);
+    float_zo = (float*)realloc(float_zo, sizeof(float) * newcap);
+    float_vcap = newcap;
+}
+
+static void ensure_face_capacity(int face_count) {
+    // allocate if not present
+    if (f_z_min_buf && f_z_max_buf && f_z_mean_buf && f_minx_buf) { if (order_cap >= face_count) return; }
+    int newcap = (face_count + 7) & ~7;
+    f_z_min_buf = (float*)realloc(f_z_min_buf, sizeof(float)*newcap);
+    f_z_max_buf = (float*)realloc(f_z_max_buf, sizeof(float)*newcap);
+    f_z_mean_buf = (float*)realloc(f_z_mean_buf, sizeof(float)*newcap);
+    f_minx_buf = (int*)realloc(f_minx_buf, sizeof(int)*newcap);
+    f_maxx_buf = (int*)realloc(f_maxx_buf, sizeof(int)*newcap);
+    f_miny_buf = (int*)realloc(f_miny_buf, sizeof(int)*newcap);
+    f_maxy_buf = (int*)realloc(f_maxy_buf, sizeof(int)*newcap);
+    f_display_buf = (int*)realloc(f_display_buf, sizeof(int)*newcap);
+    f_plane_a_buf = (float*)realloc(f_plane_a_buf, sizeof(float)*newcap);
+    f_plane_b_buf = (float*)realloc(f_plane_b_buf, sizeof(float)*newcap);
+    f_plane_c_buf = (float*)realloc(f_plane_c_buf, sizeof(float)*newcap);
+    f_plane_d_buf = (float*)realloc(f_plane_d_buf, sizeof(float)*newcap);
+}
+
+static void ensure_order_capacity(int face_count) {
+    if (order_cap >= face_count) return;
+    int newcap = (face_count + 7) & ~7;
+    order_buf = (int*)realloc(order_buf, sizeof(int)*newcap);
+    order_cap = newcap;
+}
+
+static void ensure_ordered_pairs_hash(int face_count) {
+    int min_size = face_count * 4;
+    int cap = next_pow2_int(min_size);
+    if (ordered_pairs_hash_cap >= cap) return;
+    ordered_pairs_hash = (uint32_t*)realloc(ordered_pairs_hash, sizeof(uint32_t) * cap);
+    // initialize to sentinel
+    for (int i = 0; i < cap; ++i) ordered_pairs_hash[i] = ordered_pairs_sentinel;
+    ordered_pairs_hash_cap = cap;
+    ordered_pairs_seen_count = 0;
+}
+
+static int pair_hash_contains(uint32_t key) {
+    if (!ordered_pairs_hash) return 0;
+    uint32_t mask = ordered_pairs_hash_cap - 1;
+    uint32_t h = (key * 2654435761u) & mask;
+    while (1) {
+        uint32_t v = ordered_pairs_hash[h];
+        if (v == ordered_pairs_sentinel) return 0;
+        if (v == key) return 1;
+        h = (h + 1) & mask;
+    }
+}
+
+static void pair_hash_insert(uint32_t key) {
+    if (!ordered_pairs_hash) return;
+    uint32_t mask = ordered_pairs_hash_cap - 1;
+    uint32_t h = (key * 2654435761u) & mask;
+    while (1) {
+        uint32_t v = ordered_pairs_hash[h];
+        if (v == ordered_pairs_sentinel) { ordered_pairs_hash[h] = key; ordered_pairs_seen_count++; return; }
+        if (v == key) return; // already present
+        h = (h + 1) & mask;
+    }
+}
 
 // Comparator for float z_mean ordering (used by painter_newell_sancha_float)
 static float* qsort_float_zmean = NULL;
@@ -1024,35 +1109,26 @@ void painter_newell_sancha_float(Model3D* model, int face_count) {
     FaceArrays3D* faces = &model->faces;
     int vcount = vtx->vertex_count;
 
-    // Temporary observer-space arrays in float (from fixed stored xo/yo/zo)
-    float *xo = (float*)malloc(sizeof(float) * vcount);
-    float *yo = (float*)malloc(sizeof(float) * vcount);
-    float *zo = (float*)malloc(sizeof(float) * vcount);
-    if (!xo || !yo || !zo) { if (xo) free(xo); if (yo) free(yo); if (zo) free(zo); return; }
-    for (int i = 0; i < vcount; ++i) { xo[i] = FIXED_TO_FLOAT(vtx->xo[i]); yo[i] = FIXED_TO_FLOAT(vtx->yo[i]); zo[i] = FIXED_TO_FLOAT(vtx->zo[i]); }
+    // Ensure reusable buffers are large enough and fill them
+    ensure_vertex_capacity(vcount);
+    ensure_face_capacity(face_count);
+    ensure_order_capacity(face_count);
+    ensure_ordered_pairs_hash(face_count);
 
-    // Per-face float metrics
-    float *f_z_min = (float*)malloc(sizeof(float) * face_count);
-    float *f_z_max = (float*)malloc(sizeof(float) * face_count);
-    float *f_z_mean = (float*)malloc(sizeof(float) * face_count);
-    int *f_minx = (int*)malloc(sizeof(int) * face_count);
-    int *f_maxx = (int*)malloc(sizeof(int) * face_count);
-    int *f_miny = (int*)malloc(sizeof(int) * face_count);
-    int *f_maxy = (int*)malloc(sizeof(int) * face_count);
-    int *f_display = (int*)malloc(sizeof(int) * face_count);
-    float *f_plane_a = (float*)malloc(sizeof(float) * face_count);
-    float *f_plane_b = (float*)malloc(sizeof(float) * face_count);
-    float *f_plane_c = (float*)malloc(sizeof(float) * face_count);
-    float *f_plane_d = (float*)malloc(sizeof(float) * face_count);
+    for (int i = 0; i < vcount; ++i) { float_xo[i] = FIXED_TO_FLOAT(vtx->xo[i]); float_yo[i] = FIXED_TO_FLOAT(vtx->yo[i]); float_zo[i] = FIXED_TO_FLOAT(vtx->zo[i]); }
 
-    if (!f_z_min || !f_z_max || !f_z_mean || !f_minx || !f_maxx || !f_miny || !f_maxy || !f_display || !f_plane_a || !f_plane_b || !f_plane_c || !f_plane_d) {
-        free(xo); free(yo); free(zo);
-        if (f_z_min) free(f_z_min); if (f_z_max) free(f_z_max); if (f_z_mean) free(f_z_mean);
-        if (f_minx) free(f_minx); if (f_maxx) free(f_maxx); if (f_miny) free(f_miny); if (f_maxy) free(f_maxy);
-        if (f_display) free(f_display);
-        if (f_plane_a) free(f_plane_a); if (f_plane_b) free(f_plane_b); if (f_plane_c) free(f_plane_c); if (f_plane_d) free(f_plane_d);
-        return;
-    }
+    float *f_z_min = f_z_min_buf;
+    float *f_z_max = f_z_max_buf;
+    float *f_z_mean = f_z_mean_buf;
+    int *f_minx = f_minx_buf;
+    int *f_maxx = f_maxx_buf;
+    int *f_miny = f_miny_buf;
+    int *f_maxy = f_maxy_buf;
+    int *f_display = f_display_buf;
+    float *f_plane_a = f_plane_a_buf;
+    float *f_plane_b = f_plane_b_buf;
+    float *f_plane_c = f_plane_c_buf;
+    float *f_plane_d = f_plane_d_buf;
 
     float proj_cx = 0.0f, proj_cy = 0.0f;
     float proj_scale = FIXED_TO_FLOAT(s_global_proj_scale_fixed);
@@ -1066,12 +1142,15 @@ void painter_newell_sancha_float(Model3D* model, int face_count) {
         for (int k = 0; k < n; ++k) {
             int vid = faces->vertex_indices_buffer[off + k] - 1;
             if (vid < 0 || vid >= vcount) continue;
-            float z = zo[vid]; if (z < 0.0f) disp = 0;
+            float z = float_zo[vid]; if (z < 0.0f) disp = 0;
             if (z < zmin) zmin = z; if (z > zmaxf) zmaxf = z; sum += z;
-            float px = (zo[vid] == 0.0f) ? xo[vid] : (xo[vid] / zo[vid]);
-            float py = (zo[vid] == 0.0f) ? yo[vid] : (yo[vid] / zo[vid]);
-            int sx = (int)lroundf((proj_cx - px) * -proj_scale + (proj_scale * 0.5f));
-            int sy = (int)lroundf((proj_cy - py) * -proj_scale + (proj_scale * 0.5f));
+            float px = (z == 0.0f) ? float_xo[vid] : (float_xo[vid] / z);
+            float py = (z == 0.0f) ? float_yo[vid] : (float_yo[vid] / z);
+            // faster rounding without lroundf
+            float screenx = (proj_cx - px) * -proj_scale + (proj_scale * 0.5f);
+            float screeny = (proj_cy - py) * -proj_scale + (proj_scale * 0.5f);
+            int sx = (int)(screenx + 0.5f);
+            int sy = (int)(screeny + 0.5f);
             if (sx < minx) minx = sx; if (sx > maxx) maxx = sx; if (sy < miny) miny = sy; if (sy > maxy) maxy = sy;
         }
         if (!disp || n < 3) { f_plane_a[fi] = f_plane_b[fi] = f_plane_c[fi] = f_plane_d[fi] = 0.0f; }
@@ -1081,9 +1160,9 @@ void painter_newell_sancha_float(Model3D* model, int face_count) {
             int i2 = faces->vertex_indices_buffer[off + 2] - 1;
             if (i0 < 0 || i1 < 0 || i2 < 0) { f_plane_a[fi] = f_plane_b[fi] = f_plane_c[fi] = f_plane_d[fi] = 0.0f; }
             else {
-                float x1 = xo[i0], y1 = yo[i0], z1 = zo[i0];
-                float x2 = xo[i1], y2 = yo[i1], z2 = zo[i1];
-                float x3 = xo[i2], y3 = yo[i2], z3 = zo[i2];
+                float x1 = float_xo[i0], y1 = float_yo[i0], z1 = float_zo[i0];
+                float x2 = float_xo[i1], y2 = float_yo[i1], z2 = float_zo[i1];
+                float x3 = float_xo[i2], y3 = float_yo[i2], z3 = float_zo[i2];
                 float a = y1*(z2 - z3) + y2*(z3 - z1) + y3*(z1 - z2);
                 float b = -x1*(z2 - z3) + x2*(z1 - z3) - x3*(z1 - z2);
                 float c = x1*(y2 - y3) - x2*(y1 - y3) + x3*(y1 - y2);
@@ -1096,8 +1175,8 @@ void painter_newell_sancha_float(Model3D* model, int face_count) {
         f_minx[fi] = (n>0)?minx:0; f_maxx[fi] = (n>0)?maxx:0; f_miny[fi] = (n>0)?miny:0; f_maxy[fi] = (n>0)?maxy:0; f_display[fi] = disp;
     }
 
-    // initial order
-    int* order = (int*)malloc(sizeof(int) * face_count);
+    // initial order: reuse buffer
+    int* order = order_buf;
     for (int i = 0; i < face_count; ++i) order[i] = i;
 
     // qsort by float mean
@@ -1105,32 +1184,25 @@ void painter_newell_sancha_float(Model3D* model, int face_count) {
     qsort(order, face_count, sizeof(int), cmp_float_zmean);
     qsort_float_zmean = NULL;
 
-    // insertion-based correction (copy of Windows logic)
-    int ordered_pairs_capacity = face_count * 4;
-    typedef struct { int face1; int face2; } OrderedPair;
-    OrderedPair* ordered_pairs = NULL;
-    if (ordered_pairs_capacity > 0) ordered_pairs = (OrderedPair*)malloc(sizeof(OrderedPair) * ordered_pairs_capacity);
-    int ordered_pairs_count = 0;
+    // use hash table for ordered pairs (O(1) checks)
+    // ensure_ordered_pairs_hash(face_count) already called above
+    ordered_pairs_seen_count = 0; // reset per invocation
 
     int swapped_local = 0;
     do {
         swapped_local = 0;
         for (int i = 0; i < face_count - 1; ++i) {
             int f1 = order[i], f2 = order[i+1];
-            int already_ordered = 0;
-            for (int p = 0; p < ordered_pairs_count; ++p) { if (ordered_pairs[p].face1==f1 && ordered_pairs[p].face2==f2) { already_ordered = 1; break; } }
-            if (already_ordered) continue;
+            uint32_t pair_key = (((uint32_t)f1) << 16) | (uint32_t)f2;
+            if (pair_hash_contains(pair_key)) continue;
 
             // Test 1 : Depth overlap (float)
             if (f_z_max[f2] <= f_z_min[f1]) continue;
             if (f_z_max[f1] <= f_z_min[f2]) {
                 int tmp = order[i]; order[i] = order[i+1]; order[i+1] = tmp;
                 swapped_local = 1;
-                if (ordered_pairs != NULL && ordered_pairs_count < ordered_pairs_capacity) {
-                    ordered_pairs[ordered_pairs_count].face1 = f2;
-                    ordered_pairs[ordered_pairs_count].face2 = f1;
-                    ordered_pairs_count++;
-                }
+                // record pair in hash
+                pair_hash_insert(((uint32_t)f2<<16) | (uint32_t)f1);
                 continue;
             }
 
@@ -1159,7 +1231,7 @@ void painter_newell_sancha_float(Model3D* model, int face_count) {
             int all_same_side = 1;
             for (k = 0; k < n2; ++k) {
                 int v = faces->vertex_indices_buffer[offset2 + k] - 1;
-                test_val = a1 * xo[v] + b1 * yo[v] + c1 * zo[v] + d1;  // plane of f1
+                test_val = a1 * float_xo[v] + b1 * float_yo[v] + c1 * float_zo[v] + d1;  // plane of f1
                 int side = (test_val > epsilon_f) ? 1 : ((test_val < -epsilon_f) ? -1 : 0);
                 if (side != obs_side1) { all_same_side = 0; break; }
             }
@@ -1171,7 +1243,7 @@ void painter_newell_sancha_float(Model3D* model, int face_count) {
             if (d2 > epsilon_f) obs_side2 = 1; else if (d2 < -epsilon_f) obs_side2 = -1; else goto skipT5_float;
             for (k = 0; k < n1; ++k) {
                 int v = faces->vertex_indices_buffer[offset1 + k] - 1;
-                test_val = a2 * xo[v] + b2 * yo[v] + c2 * zo[v] + d2; // plane of f2
+                test_val = a2 * float_xo[v] + b2 * float_yo[v] + c2 * float_zo[v] + d2; // plane of f2
                 int side = (test_val > epsilon_f) ? 1 : ((test_val < -epsilon_f) ? -1 : 0);
                 if (side == obs_side2) { all_opposite_side = 0; break; }
             }
@@ -1184,11 +1256,8 @@ void painter_newell_sancha_float(Model3D* model, int face_count) {
             {
                 int tmp = order[i]; order[i] = order[i+1]; order[i+1] = tmp;
                 swapped_local = 1;
-                if (ordered_pairs != NULL && ordered_pairs_count < ordered_pairs_capacity) {
-                    ordered_pairs[ordered_pairs_count].face1 = f2;
-                    ordered_pairs[ordered_pairs_count].face2 = f1;
-                    ordered_pairs_count++;
-                }
+                // record pair in hash (f2 before f1)
+                pair_hash_insert(((uint32_t)f2<<16) | (uint32_t)f1);
             }
 
         } // end for
@@ -1197,13 +1266,8 @@ void painter_newell_sancha_float(Model3D* model, int face_count) {
     // write back order to faces->sorted_face_indices
     for (int i = 0; i < face_count; ++i) faces->sorted_face_indices[i] = order[i];
 
-    // cleanup
-    if (ordered_pairs) free(ordered_pairs);
-    free(order);
-    free(xo); free(yo); free(zo);
-    free(f_z_min); free(f_z_max); free(f_z_mean);
-    free(f_minx); free(f_maxx); free(f_miny); free(f_maxy); free(f_display);
-    free(f_plane_a); free(f_plane_b); free(f_plane_c); free(f_plane_d);
+    // Note: buffers are reused across invocations to avoid malloc/free overhead
+    // (they are intentionally not freed here)
 }
 
     // UTILITY FUNCTIONS...
