@@ -75,6 +75,7 @@ static Handle globalPolyHandle = NULL;
 static int poly_handle_locked = 0;  // Track lock state
 static int framePolyOnly = 0; // Toggle: 1 = frame-only, 0 = fill+frame (default: filled polygons)
 static int painterFastMode = 1; // Toggle: 1 = fast painter (tests 1-3 only) (default: ON)
+static Fixed32 s_proj_scale_fixed = INT_TO_FIXED(100); // Global projection scale (pixels per projected unit)
 
 // ============================================================================
 //                            FIXED POINT DEFINITIONS
@@ -1566,7 +1567,8 @@ void processModelFast(Model3D* model, ObserverParams* params, const char* filena
     const Fixed32 sin_h_cos_v = FIXED_MUL_64(sin_h, cos_v);
     const Fixed32 cos_h_sin_v = FIXED_MUL_64(cos_h, sin_v);
     const Fixed32 sin_h_sin_v = FIXED_MUL_64(sin_h, sin_v);
-    Fixed32 scale = (model->auto_proj_scale && model->auto_fit_applied) ? model->auto_proj_scale : INT_TO_FIXED(100); // allow auto-fit to control projection scale when applied
+    // Use global projection scale, which is synced with auto-fit when applied
+    Fixed32 scale = s_proj_scale_fixed;
     const Fixed32 centre_x_f = INT_TO_FIXED(CENTRE_X);
     const Fixed32 centre_y_f = INT_TO_FIXED(CENTRE_Y);
     Fixed32 distance = params->distance;
@@ -1672,7 +1674,7 @@ void processModelWireframe(Model3D* model, ObserverParams* params, const char* f
     const Fixed32 sin_h_cos_v = FIXED_MUL_64(sin_h, cos_v);
     const Fixed32 cos_h_sin_v = FIXED_MUL_64(cos_h, sin_v);
     const Fixed32 sin_h_sin_v = FIXED_MUL_64(sin_h, sin_v);
-    Fixed32 scale = (model->auto_proj_scale && model->auto_fit_applied) ? model->auto_proj_scale : INT_TO_FIXED(100);
+    Fixed32 scale = s_proj_scale_fixed;
     const Fixed32 centre_x_f = INT_TO_FIXED(CENTRE_X);
     const Fixed32 centre_y_f = INT_TO_FIXED(CENTRE_Y);
     const Fixed32 distance = params->distance;
@@ -2502,6 +2504,7 @@ void DoText() {
         if (model != NULL && model->auto_fit_ready) {
             params.distance = model->auto_suggested_distance;
             model->auto_proj_scale = model->auto_suggested_proj_scale;
+            s_proj_scale_fixed = model->auto_suggested_proj_scale; // sync global scale
             model->auto_fit_applied = 1;
             printf("Auto-fit applied at load (distance=%.4f proj_scale=%.2f)\n", FIXED_TO_FLOAT(model->auto_suggested_distance), FIXED_TO_FLOAT(model->auto_suggested_proj_scale));
         } else {
@@ -2593,20 +2596,21 @@ void DoText() {
             case 43:  // '+' - ensure auto-fit then increase distance by 10%
             case 61:  // '=' also acts as '+' on some keyboards
                 if (model != NULL) {
-                    if (!model->auto_fit_applied) {
-                        if (model->auto_fit_ready) {
-                            params.distance = model->auto_suggested_distance;
-                            model->auto_proj_scale = model->auto_suggested_proj_scale;
-                            model->auto_fit_applied = 1;
-                            printf("Auto-fit applied (distance=%.4f proj_scale=%.2f). Use +/- to adjust distance.\n", FIXED_TO_FLOAT(model->auto_suggested_distance), FIXED_TO_FLOAT(model->auto_suggested_proj_scale));
-                        } else {
-                            float default_target = 200.0f;
-                            fitModelToView(model, &params, default_target, 0.92f, 0.99f, 1);
-                            printf("Auto-centered (no precomputed suggestion). Use +/- to adjust distance.\n");
-                        }
-                    }
-                    params.distance = params.distance + (params.distance / 10);
-                    printf("Distance increased -> %.2f\n", FIXED_TO_FLOAT(params.distance));
+                    // '+' now adjusts projection scale by +10%
+                    // Compute new scale = current scale * 1.1 (fixed-point multiplication)
+                    Fixed32 cur = s_proj_scale_fixed;
+                    Fixed32 mul = FLOAT_TO_FIXED(1.1f);
+                    Fixed32 new_scale = FIXED_MUL_64(cur, mul);
+                    // clamp
+                    Fixed32 min_scale = FLOAT_TO_FIXED(1.0f);
+                    Fixed32 max_scale = FLOAT_TO_FIXED(10000.0f);
+                    if (new_scale < min_scale) new_scale = min_scale;
+                    if (new_scale > max_scale) new_scale = max_scale;
+                    s_proj_scale_fixed = new_scale;
+                    // sync to model field for visibility
+                    model->auto_proj_scale = s_proj_scale_fixed;
+                    model->auto_fit_applied = 1; // treat scale as explicitly set
+                    printf("Projection scale increased -> %.2f\n", FIXED_TO_FLOAT(s_proj_scale_fixed));
                 } else {
                     printf("No model loaded.\n");
                 }
@@ -2614,20 +2618,18 @@ void DoText() {
 
             case 45:  // '-' - ensure auto-fit then decrease distance by 10%
                 if (model != NULL) {
-                    if (!model->auto_fit_applied) {
-                        if (model->auto_fit_ready) {
-                            params.distance = model->auto_suggested_distance;
-                            model->auto_proj_scale = model->auto_suggested_proj_scale;
-                            model->auto_fit_applied = 1;
-                            printf("Auto-fit applied (distance=%.4f proj_scale=%.2f). Use +/- to adjust distance.\n", FIXED_TO_FLOAT(model->auto_suggested_distance), FIXED_TO_FLOAT(model->auto_suggested_proj_scale));
-                        } else {
-                            float default_target = 200.0f;
-                            fitModelToView(model, &params, default_target, 0.92f, 0.99f, 1);
-                            printf("Auto-centered (no precomputed suggestion). Use +/- to adjust distance.\n");
-                        }
-                    }
-                    params.distance = params.distance - (params.distance / 10);
-                    printf("Distance decreased -> %.2f\n", FIXED_TO_FLOAT(params.distance));
+                    // '-' now adjusts projection scale by -10%
+                    Fixed32 cur = s_proj_scale_fixed;
+                    Fixed32 mul = FLOAT_TO_FIXED(0.9f);
+                    Fixed32 new_scale = FIXED_MUL_64(cur, mul);
+                    Fixed32 min_scale = FLOAT_TO_FIXED(1.0f);
+                    Fixed32 max_scale = FLOAT_TO_FIXED(10000.0f);
+                    if (new_scale < min_scale) new_scale = min_scale;
+                    if (new_scale > max_scale) new_scale = max_scale;
+                    s_proj_scale_fixed = new_scale;
+                    model->auto_proj_scale = s_proj_scale_fixed;
+                    model->auto_fit_applied = 1;
+                    printf("Projection scale decreased -> %.2f\n", FIXED_TO_FLOAT(s_proj_scale_fixed));
                 } else {
                     printf("No model loaded.\n");
                 }
