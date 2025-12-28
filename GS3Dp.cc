@@ -90,6 +90,7 @@ static float *f_z_min_buf = NULL, *f_z_max_buf = NULL, *f_z_mean_buf = NULL;
 static int *f_minx_buf = NULL, *f_maxx_buf = NULL, *f_miny_buf = NULL, *f_maxy_buf = NULL;
 static int *f_display_buf = NULL;
 static float *f_plane_a_buf = NULL, *f_plane_b_buf = NULL, *f_plane_c_buf = NULL, *f_plane_d_buf = NULL;
+static int *f_plane_conv_buf = NULL; /* 0 = not converted from fixed, 1 = converted */
 static int *order_buf = NULL; static int order_cap = 0;
 
 // Hash table for ordered pairs (stores pair key = (f1<<16)|f2). Uses 0xFFFFFFFF as empty sentinel
@@ -112,6 +113,7 @@ static void ensure_face_capacity(int face_count) {
     // allocate if not present
     if (f_z_min_buf && f_z_max_buf && f_z_mean_buf && f_minx_buf) { if (order_cap >= face_count) return; }
     int newcap = (face_count + 7) & ~7;
+    int oldcap = order_cap;
     f_z_min_buf = (float*)realloc(f_z_min_buf, sizeof(float)*newcap);
     f_z_max_buf = (float*)realloc(f_z_max_buf, sizeof(float)*newcap);
     f_z_mean_buf = (float*)realloc(f_z_mean_buf, sizeof(float)*newcap);
@@ -124,6 +126,9 @@ static void ensure_face_capacity(int face_count) {
     f_plane_b_buf = (float*)realloc(f_plane_b_buf, sizeof(float)*newcap);
     f_plane_c_buf = (float*)realloc(f_plane_c_buf, sizeof(float)*newcap);
     f_plane_d_buf = (float*)realloc(f_plane_d_buf, sizeof(float)*newcap);
+    f_plane_conv_buf = (int*)realloc(f_plane_conv_buf, sizeof(int)*newcap);
+    // initialize newly allocated region's conversion flags to 0
+    if (f_plane_conv_buf && newcap > oldcap) memset(f_plane_conv_buf + oldcap, 0, sizeof(int)*(newcap - oldcap));
 }
 
 static void ensure_order_capacity(int face_count) {
@@ -1153,23 +1158,15 @@ void painter_newell_sancha_float(Model3D* model, int face_count) {
             int sy = (int)(screeny + 0.5f);
             if (sx < minx) minx = sx; if (sx > maxx) maxx = sx; if (sy < miny) miny = sy; if (sy > maxy) maxy = sy;
         }
-        if (!disp || n < 3) { f_plane_a[fi] = f_plane_b[fi] = f_plane_c[fi] = f_plane_d[fi] = 0.0f; }
+        if (!disp || n < 3) {
+            f_plane_a[fi] = f_plane_b[fi] = f_plane_c[fi] = f_plane_d[fi] = 0.0f;
+            f_plane_conv_buf[fi] = 1; // mark as converted (degenerate)
+        }
         else {
-            int i0 = faces->vertex_indices_buffer[off] - 1;
-            int i1 = faces->vertex_indices_buffer[off + 1] - 1;
-            int i2 = faces->vertex_indices_buffer[off + 2] - 1;
-            if (i0 < 0 || i1 < 0 || i2 < 0) { f_plane_a[fi] = f_plane_b[fi] = f_plane_c[fi] = f_plane_d[fi] = 0.0f; }
-            else {
-                float x1 = float_xo[i0], y1 = float_yo[i0], z1 = float_zo[i0];
-                float x2 = float_xo[i1], y2 = float_yo[i1], z2 = float_zo[i1];
-                float x3 = float_xo[i2], y3 = float_yo[i2], z3 = float_zo[i2];
-                float a = y1*(z2 - z3) + y2*(z3 - z1) + y3*(z1 - z2);
-                float b = -x1*(z2 - z3) + x2*(z1 - z3) - x3*(z1 - z2);
-                float c = x1*(y2 - y3) - x2*(y1 - y3) + x3*(y1 - y2);
-                float t1 = y2*z3 - y3*z2; float t2 = y1*z3 - y3*z1; float t3 = y1*z2 - y2*z1;
-                float d = -x1 * t1 + x2 * t2 - x3 * t3;
-                f_plane_a[fi] = a; f_plane_b[fi] = b; f_plane_c[fi] = c; f_plane_d[fi] = d;
-            }
+            // Lazily convert Fixed32 plane coefficients to float only when needed.
+            // Mark as not converted for now; conversion will happen in pair tests (T4/T5).
+            f_plane_conv_buf[fi] = 0;
+            f_plane_a[fi] = f_plane_b[fi] = f_plane_c[fi] = f_plane_d[fi] = 0.0f;
         }
         f_z_min[fi] = (n>0)?zmin:0.0f; f_z_max[fi] = (n>0)?zmaxf:0.0f; f_z_mean[fi] = (n>0)?(sum/n):0.0f;
         f_minx[fi] = (n>0)?minx:0; f_maxx[fi] = (n>0)?maxx:0; f_miny[fi] = (n>0)?miny:0; f_maxy[fi] = (n>0)?maxy:0; f_display[fi] = disp;
@@ -1219,8 +1216,26 @@ void painter_newell_sancha_float(Model3D* model, int face_count) {
             int n2 = faces->vertex_count[f2];
             int offset1 = faces->vertex_indices_ptr[f1];
             int offset2 = faces->vertex_indices_ptr[f2];
-            float a1 = f_plane_a[f1], b1 = f_plane_b[f1], c1 = f_plane_c[f1], d1 = f_plane_d[f1];
-            float a2 = f_plane_a[f2], b2 = f_plane_b[f2], c2 = f_plane_c[f2], d2 = f_plane_d[f2];
+            float a1, b1, c1, d1;
+            if (!f_plane_conv_buf[f1]) {
+                a1 = FIXED_TO_FLOAT(faces->plane_a[f1]);
+                b1 = FIXED_TO_FLOAT(faces->plane_b[f1]);
+                c1 = FIXED_TO_FLOAT(faces->plane_c[f1]);
+                d1 = FIXED_TO_FLOAT(faces->plane_d[f1]);
+                f_plane_a[f1] = a1; f_plane_b[f1] = b1; f_plane_c[f1] = c1; f_plane_d[f1] = d1;
+                f_plane_conv_buf[f1] = 1;
+            } else { a1 = f_plane_a[f1]; b1 = f_plane_b[f1]; c1 = f_plane_c[f1]; d1 = f_plane_d[f1]; }
+
+            float a2, b2, c2, d2;
+            if (!f_plane_conv_buf[f2]) {
+                a2 = FIXED_TO_FLOAT(faces->plane_a[f2]);
+                b2 = FIXED_TO_FLOAT(faces->plane_b[f2]);
+                c2 = FIXED_TO_FLOAT(faces->plane_c[f2]);
+                d2 = FIXED_TO_FLOAT(faces->plane_d[f2]);
+                f_plane_a[f2] = a2; f_plane_b[f2] = b2; f_plane_c[f2] = c2; f_plane_d[f2] = d2;
+                f_plane_conv_buf[f2] = 1;
+            } else { a2 = f_plane_a[f2]; b2 = f_plane_b[f2]; c2 = f_plane_c[f2]; d2 = f_plane_d[f2]; }
+
             float epsilon_f = 1e-6f;
 
             // Test 4
