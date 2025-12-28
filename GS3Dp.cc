@@ -76,6 +76,17 @@ static int poly_handle_locked = 0;  // Track lock state
 static int framePolyOnly = 0; // Toggle: 1 = frame-only, 0 = fill+frame (default: filled polygons)
 static int painterFastMode = 1; // Toggle: 1 = fast painter (tests 1-3 only) (default: ON)
 
+// Runtime toggle: if set, use float implementation that mirrors Windows numeric behaviour exactly
+static int use_float_painter = 0;
+
+// Comparator for float z_mean ordering (used by painter_newell_sancha_float)
+static float* qsort_float_zmean = NULL;
+static int cmp_float_zmean(const void* pa, const void* pb) {
+    int a = *(const int*)pa; int b = *(const int*)pb;
+    float za = qsort_float_zmean[a]; float zb = qsort_float_zmean[b];
+    if (za > zb) return -1; if (za < zb) return 1; if (a < b) return -1; if (a > b) return 1; return 0;
+}
+
 // ============================================================================
 //                            FIXED POINT DEFINITIONS
 // ============================================================================
@@ -695,6 +706,7 @@ void painter_newell_sancha_fast(Model3D* model, int face_count) {
 }
 
 void painter_newell_sancha(Model3D* model, int face_count) {
+    if (use_float_painter) { painter_newell_sancha_float(model, face_count); return; }
     // ...existing code...
     FaceArrays3D* faces = &model->faces;
     VertexArrays3D* vtx = &model->vertices;
@@ -999,10 +1011,214 @@ void painter_newell_sancha(Model3D* model, int face_count) {
         free(ordered_pairs);
     }    
 }
-/**
- * UTILITY FUNCTIONS
- * ==================
- */
+
+/* Float-based painter: reproduces Windows numeric behaviour exactly
+   Implemented as non-destructive function; enable via env var USE_FLOAT_PAINTER=1 */
+void painter_newell_sancha_float(Model3D* model, int face_count) {
+    if (!model) return;
+    VertexArrays3D* vtx = &model->vertices;
+    FaceArrays3D* faces = &model->faces;
+    int vcount = vtx->vertex_count;
+
+    // Temporary observer-space arrays in float (from fixed stored xo/yo/zo)
+    float *xo = (float*)malloc(sizeof(float) * vcount);
+    float *yo = (float*)malloc(sizeof(float) * vcount);
+    float *zo = (float*)malloc(sizeof(float) * vcount);
+    if (!xo || !yo || !zo) { if (xo) free(xo); if (yo) free(yo); if (zo) free(zo); return; }
+    for (int i = 0; i < vcount; ++i) { xo[i] = FIXED_TO_FLOAT(vtx->xo[i]); yo[i] = FIXED_TO_FLOAT(vtx->yo[i]); zo[i] = FIXED_TO_FLOAT(vtx->zo[i]); }
+
+    // Per-face float metrics
+    float *f_z_min = (float*)malloc(sizeof(float) * face_count);
+    float *f_z_max = (float*)malloc(sizeof(float) * face_count);
+    float *f_z_mean = (float*)malloc(sizeof(float) * face_count);
+    int *f_minx = (int*)malloc(sizeof(int) * face_count);
+    int *f_maxx = (int*)malloc(sizeof(int) * face_count);
+    int *f_miny = (int*)malloc(sizeof(int) * face_count);
+    int *f_maxy = (int*)malloc(sizeof(int) * face_count);
+    int *f_display = (int*)malloc(sizeof(int) * face_count);
+    float *f_plane_a = (float*)malloc(sizeof(float) * face_count);
+    float *f_plane_b = (float*)malloc(sizeof(float) * face_count);
+    float *f_plane_c = (float*)malloc(sizeof(float) * face_count);
+    float *f_plane_d = (float*)malloc(sizeof(float) * face_count);
+
+    if (!f_z_min || !f_z_max || !f_z_mean || !f_minx || !f_maxx || !f_miny || !f_maxy || !f_display || !f_plane_a || !f_plane_b || !f_plane_c || !f_plane_d) {
+        free(xo); free(yo); free(zo);
+        if (f_z_min) free(f_z_min); if (f_z_max) free(f_z_max); if (f_z_mean) free(f_z_mean);
+        if (f_minx) free(f_minx); if (f_maxx) free(f_maxx); if (f_miny) free(f_miny); if (f_maxy) free(f_maxy);
+        if (f_display) free(f_display);
+        if (f_plane_a) free(f_plane_a); if (f_plane_b) free(f_plane_b); if (f_plane_c) free(f_plane_c); if (f_plane_d) free(f_plane_d);
+        return;
+    }
+
+    float proj_cx = 0.0f, proj_cy = 0.0f;
+    float proj_scale = FIXED_TO_FLOAT(s_global_proj_scale_fixed);
+
+    for (int fi = 0; fi < face_count; ++fi) {
+        int off = faces->vertex_indices_ptr[fi];
+        int n = faces->vertex_count[fi];
+        float zmin = 1e30f, zmaxf = -1e30f, sum = 0.0f;
+        int minx = 999999, maxx = -999999, miny = 999999, maxy = -999999;
+        int disp = 1;
+        for (int k = 0; k < n; ++k) {
+            int vid = faces->vertex_indices_buffer[off + k] - 1;
+            if (vid < 0 || vid >= vcount) continue;
+            float z = zo[vid]; if (z < 0.0f) disp = 0;
+            if (z < zmin) zmin = z; if (z > zmaxf) zmaxf = z; sum += z;
+            float px = (zo[vid] == 0.0f) ? xo[vid] : (xo[vid] / zo[vid]);
+            float py = (zo[vid] == 0.0f) ? yo[vid] : (yo[vid] / zo[vid]);
+            int sx = (int)lroundf((proj_cx - px) * -proj_scale + (proj_scale * 0.5f));
+            int sy = (int)lroundf((proj_cy - py) * -proj_scale + (proj_scale * 0.5f));
+            if (sx < minx) minx = sx; if (sx > maxx) maxx = sx; if (sy < miny) miny = sy; if (sy > maxy) maxy = sy;
+        }
+        if (!disp || n < 3) { f_plane_a[fi] = f_plane_b[fi] = f_plane_c[fi] = f_plane_d[fi] = 0.0f; }
+        else {
+            int i0 = faces->vertex_indices_buffer[off] - 1;
+            int i1 = faces->vertex_indices_buffer[off + 1] - 1;
+            int i2 = faces->vertex_indices_buffer[off + 2] - 1;
+            if (i0 < 0 || i1 < 0 || i2 < 0) { f_plane_a[fi] = f_plane_b[fi] = f_plane_c[fi] = f_plane_d[fi] = 0.0f; }
+            else {
+                float x1 = xo[i0], y1 = yo[i0], z1 = zo[i0];
+                float x2 = xo[i1], y2 = yo[i1], z2 = zo[i1];
+                float x3 = xo[i2], y3 = yo[i2], z3 = zo[i2];
+                float a = y1*(z2 - z3) + y2*(z3 - z1) + y3*(z1 - z2);
+                float b = -x1*(z2 - z3) + x2*(z1 - z3) - x3*(z1 - z2);
+                float c = x1*(y2 - y3) - x2*(y1 - y3) + x3*(y1 - y2);
+                float t1 = y2*z3 - y3*z2; float t2 = y1*z3 - y3*z1; float t3 = y1*z2 - y2*z1;
+                float d = -x1 * t1 + x2 * t2 - x3 * t3;
+                f_plane_a[fi] = a; f_plane_b[fi] = b; f_plane_c[fi] = c; f_plane_d[fi] = d;
+            }
+        }
+        f_z_min[fi] = (n>0)?zmin:0.0f; f_z_max[fi] = (n>0)?zmaxf:0.0f; f_z_mean[fi] = (n>0)?(sum/n):0.0f;
+        f_minx[fi] = (n>0)?minx:0; f_maxx[fi] = (n>0)?maxx:0; f_miny[fi] = (n>0)?miny:0; f_maxy[fi] = (n>0)?maxy:0; f_display[fi] = disp;
+    }
+
+    // initial order
+    int* order = (int*)malloc(sizeof(int) * face_count);
+    for (int i = 0; i < face_count; ++i) order[i] = i;
+
+    // qsort by float mean
+    qsort_float_zmean = f_z_mean;
+    qsort(order, face_count, sizeof(int), cmp_float_zmean);
+    qsort_float_zmean = NULL;
+
+    // insertion-based correction (copy of Windows logic)
+    int ordered_pairs_capacity = face_count * 4;
+    typedef struct { int face1; int face2; } OrderedPair;
+    OrderedPair* ordered_pairs = NULL;
+    if (ordered_pairs_capacity > 0) ordered_pairs = (OrderedPair*)malloc(sizeof(OrderedPair) * ordered_pairs_capacity);
+    int ordered_pairs_count = 0;
+
+    int swapped_local = 0;
+    do {
+        swapped_local = 0;
+        for (int i = 0; i < face_count - 1; ++i) {
+            int f1 = order[i], f2 = order[i+1];
+            int already_ordered = 0;
+            for (int p = 0; p < ordered_pairs_count; ++p) { if (ordered_pairs[p].face1==f1 && ordered_pairs[p].face2==f2) { already_ordered = 1; break; } }
+            if (already_ordered) continue;
+
+            // Test 1 : Depth overlap (float)
+            if (f_z_max[f2] <= f_z_min[f1]) continue;
+            if (f_z_max[f1] <= f_z_min[f2]) goto do_swap_float;
+
+            // Test 2 : X overlap
+            int minx1 = f_minx[f1], maxx1 = f_maxx[f1], miny1 = f_miny[f1], maxy1 = f_maxy[f1];
+            int minx2 = f_minx[f2], maxx2 = f_maxx[f2], miny2 = f_miny[f2], maxy2 = f_maxy[f2];
+            if (maxx1 <= minx2 || maxx2 <= minx1) continue;
+
+            // Test 3 : Y overlap
+            if (maxy1 <= miny2 || maxy2 <= miny1) continue;
+
+            // Plane tests (4..7) using float plane coefficients
+            int n1 = faces->vertex_count[f1];
+            int n2 = faces->vertex_count[f2];
+            int offset1 = faces->vertex_indices_ptr[f1];
+            int offset2 = faces->vertex_indices_ptr[f2];
+            float a1 = f_plane_a[f1], b1 = f_plane_b[f1], c1 = f_plane_c[f1], d1 = f_plane_d[f1];
+            float a2 = f_plane_a[f2], b2 = f_plane_b[f2], c2 = f_plane_c[f2], d2 = f_plane_d[f2];
+            float epsilon_f = 1e-6f;
+
+            // Test 4
+            int obs_side1 = 0;
+            int k;
+            float test_val;
+            if (d1 > epsilon_f) obs_side1 = 1; else if (d1 < -epsilon_f) obs_side1 = -1; else goto skipT4_float;
+            int all_same_side = 1;
+            for (k = 0; k < n2; ++k) {
+                int v = faces->vertex_indices_buffer[offset2 + k] - 1;
+                test_val = a2 * xo[v] + b2 * yo[v] + c2 * zo[v] + d2;
+                int side = (test_val > epsilon_f) ? 1 : ((test_val < -epsilon_f) ? -1 : 0);
+                if (side != obs_side1) { all_same_side = 0; break; }
+            }
+            if (all_same_side) continue;
+            skipT4_float: ;
+
+            // Test 5
+            int obs_side2 = 0; int all_opposite_side = 1;
+            if (d2 > epsilon_f) obs_side2 = 1; else if (d2 < -epsilon_f) obs_side2 = -1; else goto skipT5_float;
+            for (k = 0; k < n1; ++k) {
+                int v = faces->vertex_indices_buffer[offset1 + k] - 1;
+                test_val = a1 * xo[v] + b1 * yo[v] + c1 * zo[v] + d1;
+                int side = (test_val > epsilon_f) ? 1 : -1;
+                if (side == obs_side2) { all_opposite_side = 0; break; }
+            }
+            if (all_opposite_side) continue;
+            skipT5_float: ;
+
+            // Test 6
+            if (d1 > epsilon_f) obs_side1 = 1; else if (d1 < -epsilon_f) obs_side1 = -1; else goto skipT6_float;
+            all_opposite_side = 1;
+            for (k = 0; k < n2; ++k) {
+                int v = faces->vertex_indices_buffer[offset2 + k] - 1;
+                test_val = a2 * xo[v] + b2 * yo[v] + c2 * zo[v] + d2;
+                int side = (test_val > epsilon_f) ? 1 : -1;
+                if (side == obs_side1) { all_opposite_side = 0; break; }
+            }
+            if (all_opposite_side == 0) continue;
+            else goto do_swap_float;
+            skipT6_float: ;
+
+            // Test 7
+            if (d2 > epsilon_f) obs_side2 = 1; else if (d2 < -epsilon_f) obs_side2 = -1; else goto skipT7_float;
+            all_same_side = 1;
+            for (k = 0; k < n1; ++k) {
+                int v = faces->vertex_indices_buffer[offset1 + k] - 1;
+                test_val = a1 * xo[v] + b1 * yo[v] + c1 * zo[v] + d1;
+                int side = (test_val > epsilon_f) ? 1 : -1;
+                if (side != obs_side2) { all_same_side = 0; break; }
+            }
+            if (all_same_side == 0) goto skipT7_float;
+            else goto do_swap_float;
+
+            do_swap_float: {
+                int tmp = order[i]; order[i] = order[i+1]; order[i+1] = tmp;
+                swapped_local = 1;
+                // record pair only when swap occurs
+                if (ordered_pairs != NULL && ordered_pairs_count < ordered_pairs_capacity) {
+                    ordered_pairs[ordered_pairs_count].face1 = f2;
+                    ordered_pairs[ordered_pairs_count].face2 = f1;
+                    ordered_pairs_count++;
+                }
+            }
+
+            skipT7_float: ;
+
+        } // end for
+    } while (swapped_local);
+
+    // write back order to faces->sorted_face_indices
+    for (int i = 0; i < face_count; ++i) faces->sorted_face_indices[i] = order[i];
+
+    // cleanup
+    if (ordered_pairs) free(ordered_pairs);
+    free(order);
+    free(xo); free(yo); free(zo);
+    free(f_z_min); free(f_z_max); free(f_z_mean);
+    free(f_minx); free(f_maxx); free(f_miny); free(f_maxy); free(f_display);
+    free(f_plane_a); free(f_plane_b); free(f_plane_c); free(f_plane_d);
+}
+
+    // UTILITY FUNCTIONS...
 // ============================================================================
 //                    3D MODEL MANAGEMENT FUNCTIONS
 // ============================================================================
@@ -2463,6 +2679,12 @@ void DoText() {
 
         /* Initialize global projection scale to a sensible default (pixels per projected unit) */
         s_global_proj_scale_fixed = INT_TO_FIXED(100);
+
+        /* Optional: enable float painter to reproduce Windows numeric behaviour exactly via env var USE_FLOAT_PAINTER=1 */
+        {
+            const char* tmp = getenv("USE_FLOAT_PAINTER");
+            if (tmp && atoi(tmp) != 0) use_float_painter = 1;
+        }
 
         /* Smoke-test mode: run a small non-interactive test to validate auto-fit and key behavior */
         if (argc > 1 && strcmp(argv[1], "--smoke-test") == 0) {
