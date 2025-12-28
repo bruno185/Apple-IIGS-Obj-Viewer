@@ -1500,7 +1500,7 @@ void getObserverParams(ObserverParams* params, Model3D* model) {
     // Input observation distance (zoom/perspective).
     // Press ENTER = auto-scale + center using sphere-based fit (default target),
     // or enter a numeric value to use that distance directly (no scaling).
-    printf("Distance (ENTER = auto-scale & center, or enter a value): ");
+    printf("Distance (ENTER = auto-scale, or enter a value): ");
 
     if (fgets(input, sizeof(input), stdin) != NULL) {
         // Remove newline
@@ -2772,7 +2772,7 @@ case 112: // 'p'
                 printf("===================================\n\n");
                 printf("Space: Display model info\n");
                 printf("A/Z: Increase/Decrease distance\n");
-                printf("+/-: Apply auto-fit if none, then increase/decrease distance\n");
+                printf("+/-: Increase/Decrease projection scale (pixels per projected unit)\n");
                 printf("K: Edit angles/distance (ENTER may trigger auto-fit)\n");
                 printf("Arrow Left/Right: Decrease/Increase horizontal angle\n");
                 printf("Arrow Up/Down: Increase/Decrease vertical angle\n");
