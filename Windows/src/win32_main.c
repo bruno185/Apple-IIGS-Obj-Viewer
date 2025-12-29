@@ -75,10 +75,21 @@ static void compute_projection_and_order(HWND hwnd, int* out_winw, int* out_winh
     }
 
     // Match GS3Dp behavior: model-space centering applied at load.
-    // Use projected-space center (0,0) and user-controlled projection scale (s_proj_scale). Distance modifies perspective only; projection scale controls display size.
+    // Use projected-space bbox center so the projected model is centered in the view.
     float cx = 0.0f;
     float cy = 0.0f;
     float scale = s_proj_scale; // user-controlled projection scale
+    // Only compute center if we found valid projected bounds
+    if (pxmin <= pxmax) {
+        cx = (pxmin + pxmax) * 0.5f;
+        cy = (pymin + pymax) * 0.5f;
+    } else {
+        // fallback to origin if nothing valid
+        cx = 0.0f; cy = 0.0f;
+    }
+    // Avoid insanely large scales that push geometry far outside GDI coordinate range
+    const float MAX_PROJ_SCALE = 3000.0f;
+    if (scale > MAX_PROJ_SCALE) scale = MAX_PROJ_SCALE;
 
     *out_cx = cx; *out_cy = cy; *out_scale = scale; *out_pxmin = pxmin; *out_pxmax = pxmax; *out_pymin = pymin; *out_pymax = pymax;
     // inform painter module of projection params (so it can compute per-face 2D bbox like GS3Dp)
@@ -121,10 +132,22 @@ static void apply_auto_fit(HWND hwnd, Model* m, ObsVertex* obs) {
     float margin = 0.9f;
     float s1 = (winw * margin) / (pxmax - pxmin);
     float s2 = (winh * margin) / (pymax - pymin);
-    s_proj_scale = (s1 < s2) ? s1 : s2;
+    // prevent division by zero / extreme scale when bbox is degenerate
+    if (!(pxmax > pxmin) || !(pymax > pymin)) {
+        s_proj_scale = 200.0f; // default safe scale
+    } else {
+        s_proj_scale = (s1 < s2) ? s1 : s2;
+    }
+    // clamp to avoid excessive scaling
+    const float MAX_PROJ_SCALE = 3000.0f;
+    if (s_proj_scale > MAX_PROJ_SCALE) s_proj_scale = MAX_PROJ_SCALE;
 
     extern void set_projection_params(float cx, float cy, float scale);
-    set_projection_params(0.0f, 0.0f, s_proj_scale);
+    // center projection on the projected bbox midpoint so apply_auto_fit actually centers the model
+    float cx = 0.0f, cy = 0.0f;
+    if (pxmax > pxmin) { cx = (pxmin + pxmax) * 0.5f; }
+    if (pymax > pymin) { cy = (pymin + pymax) * 0.5f; }
+    set_projection_params(cx, cy, s_proj_scale);
     if (g_model && g_order) compute_painter_order(g_model, g_order);
     InvalidateRect(hwnd, NULL, TRUE);
     render_frame(hwnd);
@@ -166,10 +189,9 @@ static void render_frame(HWND hwnd) {
 
 
 
-    // diagnostics: write projection bbox/scale and sample vertices to log
+    // diagnostics: write projection bbox/scale, sample vertices and painter order to exe-dir log
     {
-        const char* tmp = getenv("TEMP"); char logfn[1024];
-        if (tmp) snprintf(logfn, sizeof(logfn), "%s\\viewer_win32.log", tmp); else snprintf(logfn, sizeof(logfn), "viewer_win32.log");
+        char exe_path[MAX_PATH]; GetModuleFileNameA(NULL, exe_path, MAX_PATH); char exe_dir[MAX_PATH]; strncpy(exe_dir, exe_path, MAX_PATH); char* lastbs = strrchr(exe_dir, '\\'); if (lastbs) *lastbs = '\0'; char logfn[1024]; snprintf(logfn, sizeof(logfn), "%s\\viewer_win32.log", exe_dir);
         FILE* lf = fopen(logfn, "a");
         if (lf) {
             fprintf(lf, "PROJ: cx=%.6f cy=%.6f pxmin=%.6f pxmax=%.6f pymin=%.6f pymax=%.6f scale=%.6f proj_scale=%.6f dist=%.6f win=%d,%d\n", cx, cy, pxmin, pxmax, pymin, pymax, scale, s_proj_scale, s_dist, winw, winh);
@@ -177,17 +199,30 @@ static void render_frame(HWND hwnd) {
             for (int i=0;i<n;i++) {
                 ObsVertex v = g_obs[i]; float px = (v.zo==0.0f)?v.xo:(v.xo/v.zo); float py = (v.zo==0.0f)?v.yo:(v.yo/v.zo); fprintf(lf, "VERT[%d] xo=%.6f yo=%.6f zo=%.6f px=%.6f py=%.6f\n", i, v.xo, v.yo, v.zo, px, py);
             }
+            // log painter version and full order line
+            fprintf(lf, "PAINTER_ORDER: V%d, order:", g_painter_order_version);
+            for (int k = 0; k < g_model->face_count; ++k) {
+                fprintf(lf, " %d", g_order[k]);
+            }
+            fprintf(lf, "\r\n");
             fclose(lf);
         }
     }
 
     // draw faces
+    int offscreen_count = 0;
     for (int fi=0; fi<g_model->face_count; fi++) {
         int fidx = g_order[fi]; Face* f = &g_model->faces[fidx]; POINT pts[256];
         for (int k=0;k<f->count;k++) {
             int vi = f->indices[k]; ObsVertex ov = g_obs[vi]; float px = (ov.zo==0.0f)?ov.xo:(ov.xo/ov.zo); float py = (ov.zo==0.0f)?ov.yo:(ov.yo/ov.zo);
             project_to_screen(px, py, winw, winh, scale, cx, cy, &pts[k]);
         }
+        // compute face screen bbox and track offscreen faces
+        int fminx = pts[0].x, fmaxx = pts[0].x, fminy = pts[0].y, fmaxy = pts[0].y;
+        for (int k=1;k<f->count;k++) { if (pts[k].x < fminx) fminx = pts[k].x; if (pts[k].x > fmaxx) fmaxx = pts[k].x; if (pts[k].y < fminy) fminy = pts[k].y; if (pts[k].y > fmaxy) fmaxy = pts[k].y; }
+        int visible = !((fmaxx < 0) || (fminx >= winw) || (fmaxy < 0) || (fminy >= winh));
+        if (!visible) offscreen_count++;
+
         // All faces use the same blue color
         COLORREF col = RGB(0, 122, 255);
         if (g_wireframe) {
@@ -213,6 +248,11 @@ static void render_frame(HWND hwnd) {
     // draw parameter overlay at bottom (Angle H, V, W, Distance, Projection scale)
     {
         char buf[256]; snprintf(buf, sizeof(buf), "H=%.1f V=%.1f W=%.1f D=%.3f S=%.1f", s_ah, s_av, s_aw, s_dist, s_proj_scale);
+        // Log offscreen face info (help debug missing render)
+        if (g_model) {
+            char exe_path[MAX_PATH]; GetModuleFileNameA(NULL, exe_path, MAX_PATH); char exe_dir[MAX_PATH]; strncpy(exe_dir, exe_path, MAX_PATH); char* lastbs = strrchr(exe_dir, '\\'); if (lastbs) *lastbs = '\0'; char logfn[1024]; snprintf(logfn, sizeof(logfn), "%s\\viewer_win32.log", exe_dir);
+            FILE* lf = fopen(logfn, "a"); if (lf) { fprintf(lf, "DRAW: offscreen_faces=%d total=%d win=%d,%d cx=%.6f cy=%.6f scale=%.6f pxmin=%.6f pxmax=%.6f pymin=%.6f pymax=%.6f\n", offscreen_count, g_model->face_count, winw, winh, cx, cy, scale, pxmin, pxmax, pymin, pymax); fclose(lf); }
+        }
         SetTextColor(memdc, RGB(220,220,220)); SetBkMode(memdc, TRANSPARENT);
         TextOutA(memdc, 10, winh - 20, buf, (int)strlen(buf));
     }
@@ -247,8 +287,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 SendMessageA(g_dbg_edit, EM_SETSEL, (WPARAM)len, (LPARAM)len);
                 SendMessageA(g_dbg_edit, EM_REPLACESEL, 0, (LPARAM)msg);
             }
-            // also write to TEMP log file
-            const char* tmp = getenv("TEMP"); char logfn[1024]; if (tmp) snprintf(logfn, sizeof(logfn), "%s\\viewer_win32.log", tmp); else snprintf(logfn, sizeof(logfn), "viewer_win32.log"); FILE* lf = fopen(logfn, "a"); if (lf) { fprintf(lf, "%s", msg); fclose(lf); }
+            // also write to exe-directory log file (viewer_win32.log)
+            char exe_path[MAX_PATH]; char logfn[1024]; GetModuleFileNameA(NULL, exe_path, MAX_PATH); char exe_dir[MAX_PATH]; strncpy(exe_dir, exe_path, MAX_PATH); char* lastbs = strrchr(exe_dir, '\\'); if (lastbs) *lastbs = '\0'; snprintf(logfn, sizeof(logfn), "%s\\viewer_win32.log", exe_dir); FILE* lf = fopen(logfn, "a"); if (lf) { fprintf(lf, "%s", msg); fclose(lf); }
             free(msg);
         }
         return 0;
@@ -267,6 +307,92 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     dumpFaceEquationsCSV_Model(g_model);
                     const char* tmp = getenv("TEMP"); char logfn[1024]; if (tmp) snprintf(logfn, sizeof(logfn), "%s\\viewer_win32.log", tmp); else snprintf(logfn, sizeof(logfn), "viewer_win32.log"); FILE* lf = fopen(logfn, "a"); if (lf) { fprintf(lf, "DEBUGDUMP: wrote %s\\equ_windows.csv\n", (tmp?tmp:".") ); fclose(lf); }
                 }
+            }
+            else if (wParam == '1') {
+                g_painter_order_version = 1;
+                PostMessageW(hwnd, WM_MODEL_LOAD_LOG, 0, (LPARAM)_strdup("Painter order: V1 selected\r\n"));
+                if (g_model) {
+                    int *ord = (int*)malloc(sizeof(int) * g_model->face_count);
+                    if (ord) {
+                        if (compute_painter_order(g_model, ord)) {
+                            char exe_path[MAX_PATH]; GetModuleFileNameA(NULL, exe_path, MAX_PATH); char exe_dir[MAX_PATH]; strncpy(exe_dir, exe_path, MAX_PATH); char* lastbs = strrchr(exe_dir, '\\'); if (lastbs) *lastbs = '\0'; char ofn[1024]; snprintf(ofn, sizeof(ofn), "%s\\equ_order_runtime_v1.csv", exe_dir);
+                            FILE* of = fopen(ofn, "w"); if (of) {
+                                fprintf(of, "# version,1,faces,%d\\n", g_model->face_count);
+                                for (int ii = 0; ii < g_model->face_count; ++ii) fprintf(of, "%d\\n", ord[ii]);
+                                fclose(of);
+                            }
+                            char logbuf[1024]; snprintf(logbuf, sizeof(logbuf), "Painter order: wrote %s\\r\\n", ofn);
+                            PostMessageW(hwnd, WM_MODEL_LOAD_LOG, 0, (LPARAM)_strdup(logbuf));
+                        }
+                        free(ord);
+                    }
+                }
+                InvalidateRect(hwnd, NULL, TRUE);
+            }
+            else if (wParam == '2') {
+                g_painter_order_version = 2;
+                PostMessageW(hwnd, WM_MODEL_LOAD_LOG, 0, (LPARAM)_strdup("Painter order: V2 selected\r\n"));
+                if (g_model) {
+                    int *ord = (int*)malloc(sizeof(int) * g_model->face_count);
+                    if (ord) {
+                        if (compute_painter_order(g_model, ord)) {
+                            char exe_path[MAX_PATH]; GetModuleFileNameA(NULL, exe_path, MAX_PATH); char exe_dir[MAX_PATH]; strncpy(exe_dir, exe_path, MAX_PATH); char* lastbs = strrchr(exe_dir, '\\'); if (lastbs) *lastbs = '\0'; char ofn[1024]; snprintf(ofn, sizeof(ofn), "%s\\equ_order_runtime_v2.csv", exe_dir);
+                            FILE* of = fopen(ofn, "w"); if (of) {
+                                fprintf(of, "# version,2,faces,%d\\n", g_model->face_count);
+                                for (int ii = 0; ii < g_model->face_count; ++ii) fprintf(of, "%d\\n", ord[ii]);
+                                fclose(of);
+                            }
+                            char logbuf[1024]; snprintf(logbuf, sizeof(logbuf), "Painter order: wrote %s\\r\\n", ofn);
+                            PostMessageW(hwnd, WM_MODEL_LOAD_LOG, 0, (LPARAM)_strdup(logbuf));
+                        }
+                        free(ord);
+                    }
+                }
+                InvalidateRect(hwnd, NULL, TRUE);
+            }
+            else if (wParam == '3') {
+                g_painter_order_version = 3;
+                PostMessageW(hwnd, WM_MODEL_LOAD_LOG, 0, (LPARAM)_strdup("Painter order: V3 selected\r\n"));
+                if (g_model) {
+                    int *ord = (int*)malloc(sizeof(int) * g_model->face_count);
+                    if (ord) {
+                        if (compute_painter_order(g_model, ord)) {
+                            char exe_path[MAX_PATH]; GetModuleFileNameA(NULL, exe_path, MAX_PATH); char exe_dir[MAX_PATH]; strncpy(exe_dir, exe_path, MAX_PATH); char* lastbs = strrchr(exe_dir, '\\'); if (lastbs) *lastbs = '\0'; char ofn[1024]; snprintf(ofn, sizeof(ofn), "%s\\equ_order_runtime_v3.csv", exe_dir);
+                            FILE* of = fopen(ofn, "w"); if (of) {
+                                fprintf(of, "# version,3,faces,%d\\n", g_model->face_count);
+                                for (int ii = 0; ii < g_model->face_count; ++ii) fprintf(of, "%d\\n", ord[ii]);
+                                fclose(of);
+                            }
+                            char logbuf[1024]; snprintf(logbuf, sizeof(logbuf), "Painter order: wrote %s\\r\\n", ofn);
+                            PostMessageW(hwnd, WM_MODEL_LOAD_LOG, 0, (LPARAM)_strdup(logbuf));
+                        }
+                        free(ord);
+                    }
+                }
+                InvalidateRect(hwnd, NULL, TRUE);
+            }
+            else if (wParam == '4') {
+                g_painter_order_version = 4;
+                PostMessageW(hwnd, WM_MODEL_LOAD_LOG, 0, (LPARAM)_strdup("Painter order: V4 selected\r\n"));
+                if (g_model) {
+                    int *ord = (int*)malloc(sizeof(int) * g_model->face_count);
+                    if (ord) {
+                        if (compute_painter_order(g_model, ord)) {
+                            char exe_path[MAX_PATH]; GetModuleFileNameA(NULL, exe_path, MAX_PATH); char exe_dir[MAX_PATH]; strncpy(exe_dir, exe_path, MAX_PATH); char* lastbs = strrchr(exe_dir, '\\'); if (lastbs) *lastbs = '\0'; char ofn[1024]; snprintf(ofn, sizeof(ofn), "%s\\equ_order_runtime_v4.csv", exe_dir);
+                            FILE* of = fopen(ofn, "w"); if (of) {
+                                fprintf(of, "# version,4,faces,%d\\n", g_model->face_count);
+                                for (int ii = 0; ii < g_model->face_count; ++ii) fprintf(of, "%d\\n", ord[ii]);
+                                fclose(of);
+                            }
+                            char logbuf[1024]; snprintf(logbuf, sizeof(logbuf), "Painter order: wrote %s\\r\\n", ofn);
+                            PostMessageW(hwnd, WM_MODEL_LOAD_LOG, 0, (LPARAM)_strdup(logbuf));
+                            // Also produce a pairwise debug CSV to explain decisions (for parity with Pascal TestComplet)
+                            char dbgfn[1024]; snprintf(dbgfn, sizeof(dbgfn), "%s\\pair_debug_v4.csv", exe_dir); if (dump_pairwise_debug(g_model, 4, dbgfn)) { char dbglog[1024]; snprintf(dbglog, sizeof(dbglog), "Painter pairwise debug: wrote %s\\r\\n", dbgfn); PostMessageW(hwnd, WM_MODEL_LOAD_LOG, 0, (LPARAM)_strdup(dbglog)); } else { char dbglog[1024]; snprintf(dbglog, sizeof(dbglog), "Painter pairwise debug: failed to write %s\\r\\n", dbgfn); PostMessageW(hwnd, WM_MODEL_LOAD_LOG, 0, (LPARAM)_strdup(dbglog)); }
+                        }
+                        free(ord);
+                    }
+                }
+                InvalidateRect(hwnd, NULL, TRUE);
             }
             // Distance controls: A/a decreases by 10%, Z/z increases by 10%
             else if (wParam == 'A' || wParam == 'a') {
@@ -361,7 +487,28 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             const char* tmp = getenv("TEMP"); char logfn[1024]; if (tmp) snprintf(logfn, sizeof(logfn), "%s\\viewer_win32.log", tmp); else snprintf(logfn, sizeof(logfn), "viewer_win32.log"); FILE* lf = fopen(logfn, "a"); if (lf) { fprintf(lf, "ASYNC LOAD: Loaded model verts=%d faces=%d\n", g_model->vert_count, g_model->face_count); fclose(lf); }
             InvalidateRect(hwnd, NULL, TRUE);
             // optionally dump face equations for debugging parity with GS3Dp
-            if (s_dump_on_load) { if (g_model) { dumpFaceEquationsCSV_Model(g_model); const char* tmp2 = getenv("TEMP"); char logfn2[1024]; if (tmp2) snprintf(logfn2, sizeof(logfn2), "%s\\viewer_win32.log", tmp2); else snprintf(logfn2, sizeof(logfn2), "viewer_win32.log"); FILE* lf2 = fopen(logfn2, "a"); if (lf2) { fprintf(lf2, "DEBUGDUMP: wrote %s\\equ_windows.csv\n", (tmp2?tmp2:".")); fclose(lf2); } } }
+            if (s_dump_on_load) { if (g_model) {
+                dumpFaceEquationsCSV_Model(g_model);
+                const char* tmp2 = getenv("TEMP"); char logfn2[1024]; if (tmp2) snprintf(logfn2, sizeof(logfn2), "%s\\viewer_win32.log", tmp2); else snprintf(logfn2, sizeof(logfn2), "viewer_win32.log"); FILE* lf2 = fopen(logfn2, "a"); if (lf2) { fprintf(lf2, "DEBUGDUMP: wrote %s\\equ_windows.csv\n", (tmp2?tmp2:".")); fclose(lf2); }
+                // Additionally dump the computed painter ordering for V1..V4 so we can compare algorithms
+                for (int ver = 1; ver <= 4; ++ver) {
+                    g_painter_order_version = ver;
+                    int *ord = (int*)malloc(sizeof(int) * g_model->face_count);
+                    if (ord) {
+                        if (compute_painter_order(g_model, ord)) {
+                            char ofn[1024]; if (tmp2) snprintf(ofn, sizeof(ofn), "%s\\equ_order_v%d.csv", tmp2, ver); else snprintf(ofn, sizeof(ofn), "equ_order_v%d.csv", ver);
+                            FILE* of = fopen(ofn, "w"); if (of) {
+                                fprintf(of, "# version,%d,faces,%d\n", ver, g_model->face_count);
+                                for (int ii = 0; ii < g_model->face_count; ++ii) fprintf(of, "%d\n", ord[ii]);
+                                fclose(of);
+                            }
+                        }
+                        free(ord);
+                    }
+                }
+                // restore default painter version
+                g_painter_order_version = 1;
+            } }
             // loading finished (no debug dialog): write a log entry
             const char* tmp3 = getenv("TEMP"); char logfn3[1024]; if (tmp3) snprintf(logfn3, sizeof(logfn3), "%s\\viewer_win32.log", tmp3); else snprintf(logfn3, sizeof(logfn3), "viewer_win32.log"); FILE* lf3 = fopen(logfn3, "a"); if (lf3) { fprintf(lf3, "Load complete.\n"); fclose(lf3); }
             free(res);
@@ -462,6 +609,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
         else if (strcmp(tmp2,"--angle_v")==0 && (i+1)<argc) { char tmp3[128]; wcstombs(tmp3, argv[++i], sizeof(tmp3)); s_av = (float)atof(tmp3); }
         else if (strcmp(tmp2,"--angle_w")==0 && (i+1)<argc) { char tmp3[128]; wcstombs(tmp3, argv[++i], sizeof(tmp3)); s_aw = (float)atof(tmp3); }
         else if (strcmp(tmp2,"--distance")==0 && (i+1)<argc) { char tmp3[128]; wcstombs(tmp3, argv[++i], sizeof(tmp3)); s_dist = (float)atof(tmp3); }
+        else if (strcmp(tmp2,"--painter")==0 && (i+1)<argc) { char tmp3[128]; wcstombs(tmp3, argv[++i], sizeof(tmp3)); int pv = atoi(tmp3); if (pv>=1 && pv<=4) { g_painter_order_version = pv; } }
         else if (strcmp(tmp2,"--dump-on-load")==0 || strcmp(tmp2,"--dump")==0) { s_dump_on_load = 1; }
     }
 
@@ -598,6 +746,8 @@ static DWORD WINAPI loader_thread_fn(LPVOID arg) {
     compute_painter_order(nm, order_buf);
     PostMessageW(hwnd, WM_MODEL_LOAD_LOG, 0, (LPARAM)_strdup("Painter order computed.\r\n"));
     if (lsf) { FILE* lsf7 = fopen(loader_logfn, "a"); if (lsf7) { fprintf(lsf7, "THREAD: compute_painter_order done\n"); fclose(lsf7); } }
+    // Also attempt to write pairwise debug for V4 on load to help diagnose parity issues (writes to exe dir)
+    char exe_path[MAX_PATH]; GetModuleFileNameA(NULL, exe_path, MAX_PATH); char exe_dir[MAX_PATH]; strncpy(exe_dir, exe_path, MAX_PATH); char* lastbs = strrchr(exe_dir, '\\'); if (lastbs) *lastbs = '\0'; char dbgfn[1024]; snprintf(dbgfn, sizeof(dbgfn), "%s\\pair_debug_v4_onload.csv", exe_dir); if (dump_pairwise_debug(nm, 4, dbgfn)) { char dbgl[1024]; snprintf(dbgl, sizeof(dbgl), "Painter pairwise debug: wrote %s\\r\\n", dbgfn); PostMessageW(hwnd, WM_MODEL_LOAD_LOG, 0, (LPARAM)_strdup(dbgl)); } else { char dbgl[1024]; snprintf(dbgl, sizeof(dbgl), "Painter pairwise debug: failed to write %s\\r\\n", dbgfn); PostMessageW(hwnd, WM_MODEL_LOAD_LOG, 0, (LPARAM)_strdup(dbgl)); }
 
     // post result
     LoadResult* res = (LoadResult*)malloc(sizeof(LoadResult)); res->m = nm; res->order = order_buf;
@@ -684,15 +834,25 @@ static LRESULT CALLBACK ParamsWndProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM 
         swprintf(buf, 64, L"%.0f", s_aw); hEditAW = CreateWindowExW(0, L"EDIT", buf, WS_CHILD|WS_VISIBLE|WS_BORDER|ES_LEFT, 140,100,180,24,dlg,(HMENU)103,GetModuleHandle(NULL),NULL);
         swprintf(buf, 64, L"%.3f", s_dist); hEditDist = CreateWindowExW(0, L"EDIT", buf, WS_CHILD|WS_VISIBLE|WS_BORDER|ES_LEFT, 140,140,180,24,dlg,(HMENU)104,GetModuleHandle(NULL),NULL);
         swprintf(buf, 64, L"%.1f", s_proj_scale); HWND hEditProjScale = CreateWindowExW(0, L"EDIT", buf, WS_CHILD|WS_VISIBLE|WS_BORDER|ES_LEFT, 140,180,180,24,dlg,(HMENU)106,GetModuleHandle(NULL),NULL);
+        // painter version combo
+        HWND hComboPainter = CreateWindowExW(0, L"COMBOBOX", NULL, WS_CHILD|WS_VISIBLE|CBS_DROPDOWNLIST|WS_VSCROLL, 140,210,180,120,dlg,(HMENU)107,GetModuleHandle(NULL),NULL);
+        SendMessageW(hComboPainter, CB_ADDSTRING, 0, (LPARAM)L"V1 - adjacent swap (original)");
+        SendMessageW(hComboPainter, CB_ADDSTRING, 0, (LPARAM)L"V2 - pairwise compare");
+        SendMessageW(hComboPainter, CB_ADDSTRING, 0, (LPARAM)L"V3 - V1 without Tests 6/7");
+        SendMessageW(hComboPainter, CB_ADDSTRING, 0, (LPARAM)L"V4 - Delphi TestComplet algorithm");
+        // future versions can be added here
+        int sel = (g_painter_order_version == 2) ? 1 : (g_painter_order_version == 3) ? 2 : (g_painter_order_version == 4) ? 3 : 0;
+        SendMessageW(hComboPainter, CB_SETCURSEL, (WPARAM)sel, 0);
         // labels
         CreateWindowExW(0, L"STATIC", L"Angle H:", WS_CHILD|WS_VISIBLE, 20,20,110,24,dlg,NULL,GetModuleHandle(NULL),NULL);
         CreateWindowExW(0, L"STATIC", L"Angle V:", WS_CHILD|WS_VISIBLE, 20,60,110,24,dlg,NULL,GetModuleHandle(NULL),NULL);
         CreateWindowExW(0, L"STATIC", L"Angle W:", WS_CHILD|WS_VISIBLE, 20,100,110,24,dlg,NULL,GetModuleHandle(NULL),NULL);
         CreateWindowExW(0, L"STATIC", L"Distance:", WS_CHILD|WS_VISIBLE, 20,140,110,24,dlg,NULL,GetModuleHandle(NULL),NULL);
         CreateWindowExW(0, L"STATIC", L"Projection scale:", WS_CHILD|WS_VISIBLE, 20,180,110,24,dlg,NULL,GetModuleHandle(NULL),NULL);
-        // buttons (lowered)
-        CreateWindowExW(0, L"BUTTON", L"OK", WS_CHILD|WS_VISIBLE|BS_DEFPUSHBUTTON, 60,230,90,28,dlg,(HMENU)201,GetModuleHandle(NULL),NULL);
-        CreateWindowExW(0, L"BUTTON", L"Cancel", WS_CHILD|WS_VISIBLE, 200,230,90,28,dlg,(HMENU)202,GetModuleHandle(NULL),NULL);
+        CreateWindowExW(0, L"STATIC", L"Painter order:", WS_CHILD|WS_VISIBLE, 20,210,110,24,dlg,NULL,GetModuleHandle(NULL),NULL);
+        // buttons (lowered) - moved down to fit combo
+        CreateWindowExW(0, L"BUTTON", L"OK", WS_CHILD|WS_VISIBLE|BS_DEFPUSHBUTTON, 60,260,90,28,dlg,(HMENU)201,GetModuleHandle(NULL),NULL);
+        CreateWindowExW(0, L"BUTTON", L"Cancel", WS_CHILD|WS_VISIBLE, 200,260,90,28,dlg,(HMENU)202,GetModuleHandle(NULL),NULL);
         return 0;
     }
     if (msg == WM_COMMAND) {
@@ -704,6 +864,14 @@ static LRESULT CALLBACK ParamsWndProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM 
             GetWindowTextW(hEditDist, buf, 64); s_dist = (float)wcstod(buf, NULL);
             GetWindowTextW((HWND)GetDlgItem(dlg, 106), buf, 64); s_proj_scale = (float)wcstod(buf, NULL);
             if (s_proj_scale < 1.0f) s_proj_scale = 1.0f;
+            // painter version selection from combo (ID 107)
+            int sel = (int)SendMessageW((HWND)GetDlgItem(dlg, 107), CB_GETCURSEL, 0, 0);
+            if (sel >= 0) {
+                g_painter_order_version = sel + 1; // combo index 0 -> V1, 1 -> V2
+                char* msg = _strdup("Painter order selection changed via Parameters dialog\r\n");
+                HWND ownerWnd = GetWindow(dlg, GW_OWNER); if (!ownerWnd) ownerWnd = GetParent(dlg); if (!ownerWnd) ownerWnd = GetAncestor(dlg, GA_ROOTOWNER);
+                if (ownerWnd) PostMessageW(ownerWnd, WM_MODEL_LOAD_LOG, 0, (LPARAM)msg); else free(msg);
+            }
             // normalize angles to [0,360)
             s_ah = normalize_angle360(s_ah); s_av = normalize_angle360(s_av); s_aw = normalize_angle360(s_aw);
             // apply params and recompute using GS3Dp semantics (distance only)
@@ -741,12 +909,12 @@ static void on_show_params(HWND hwnd) {
     WNDCLASSW wc = {0}; wc.lpfnWndProc = ParamsWndProc; wc.hInstance = GetModuleHandle(NULL); wc.lpszClassName = PCLS; wc.hCursor = LoadCursor(NULL, IDC_ARROW);
     RegisterClassW(&wc);
     // make dialog slightly taller to fit controls cleanly
-    HWND dlg = CreateWindowExW(0, PCLS, L"3D Parameters", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, CW_USEDEFAULT, CW_USEDEFAULT, 360, 320, hwnd, NULL, GetModuleHandle(NULL), NULL);
+    HWND dlg = CreateWindowExW(0, PCLS, L"3D Parameters", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, CW_USEDEFAULT, CW_USEDEFAULT, 360, 380, hwnd, NULL, GetModuleHandle(NULL), NULL);
     if (!dlg) { // non-blocking: log error, avoid messagebox
         const char* tmp = getenv("TEMP"); char logfn[1024]; if (tmp) snprintf(logfn, sizeof(logfn), "%s\\viewer_win32.log", tmp); else snprintf(logfn, sizeof(logfn), "viewer_win32.log"); FILE* lf = fopen(logfn, "a"); if (lf) { fprintf(lf, "ERROR: Failed to create params dialog\n"); fclose(lf); }
         return; }
     // center over parent (account for increased height)
-    RECT rc; GetWindowRect(hwnd, &rc); int cx = (rc.left+rc.right)/2 - 180; int cy = (rc.top+rc.bottom)/2 - 160; SetWindowPos(dlg, HWND_TOP, cx, cy, 360, 320, SWP_SHOWWINDOW);
+    RECT rc; GetWindowRect(hwnd, &rc); int cx = (rc.left+rc.right)/2 - 180; int cy = (rc.top+rc.bottom)/2 - 190; SetWindowPos(dlg, HWND_TOP, cx, cy, 360, 380, SWP_SHOWWINDOW);
     ShowWindow(dlg, SW_SHOW);
     // modal loop with Enter handling: pressing Enter will trigger OK (ID 201)
     MSG msg;

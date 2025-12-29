@@ -11,6 +11,8 @@ void free_model(Model* m);
 
 void set_observer_params(float ah, float av, float aw, float dist);
 int compute_painter_order(Model* m, int* order_out);
+int dump_pairwise_debug(Model* m, int version, const char* outpath);
+extern int g_painter_order_version; /* 1 = V1 (default), 2 = V2 */
 void dumpFaceEquationsCSV_Model(Model* m);
 typedef struct { float xo, yo, zo; } ObsVertex;
 void compute_obs_vertices(Model* m, ObsVertex* out); // out = ObsVertex*

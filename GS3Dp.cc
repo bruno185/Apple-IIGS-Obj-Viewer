@@ -351,7 +351,7 @@ static inline int normalize_deg(int deg) {
 // ============================================================================
 
 // Performance and debug configuration
-#define ENABLE_DEBUG_SAVE 0     // 1 = Enable debug save (SLOW!), 0 = Disable
+#define ENABLE_DEBUG_SAVE 1     // 1 = Enable debug save (SLOW!), 0 = Disable
 //#define PERFORMANCE_MODE 0      // 1 = Optimized performance mode, 0 = Debug mode
 // OPTIMIZATION: Performance mode - disable printf
 #define PERFORMANCE_MODE 1      // 1 = no printf, 0 = normal printf
@@ -930,6 +930,7 @@ void painter_newell_sancha(Model3D* model, int face_count) {
             Fixed32 test_value;
 
             t4++;
+            // XXXXXXXXXXXXXXXXXXXXXXXXXXX
             // Test 4 : Test si f2 est du même côté que l'observatur par rapport au plan de f1. 
             // Si oui, f2 est bien devant f1, pas d'échange.
             if (ENABLE_DEBUG_SAVE) {
@@ -940,11 +941,15 @@ void painter_newell_sancha(Model3D* model, int face_count) {
             if (d1 > epsilon) obs_side1 = 1; 
             else if (d1 < -epsilon) obs_side1 = -1;
             else goto skipT4; // si l'observateur est sur le plan, on ne peut rien conclure, il faut faire d'autres tests
+            
             all_same_side = 1;
             for (k=0; k<n2; k++) {
                     int v = faces->vertex_indices_buffer[offset2+k]-1;
-                    test_value = a1*vtx->xo[v] + b1*vtx->yo[v] + c1*vtx->zo[v] + d1;
-                    //test_value = a2*vtx->xo[v] + b2*vtx->yo[v] + c2*vtx->zo[v] + d2;
+                    test_value = FIXED_ADD(FIXED_ADD(FIXED_ADD(FIXED_MUL_64(a1, vtx->xo[v]), FIXED_MUL_64(b1, vtx->yo[v])), FIXED_MUL_64(c1, vtx->zo[v])), d1);
+                    if (ENABLE_DEBUG_SAVE) {
+                        printf("test_value = %f\n", FIXED_TO_FLOAT(test_value));
+                        printf("k = %d, vertex index = %d, vtx = (%f, %f, %f)\n", k, v+1, FIXED_TO_FLOAT(vtx->xo[v]), FIXED_TO_FLOAT(vtx->yo[v]), FIXED_TO_FLOAT(vtx->zo[v]));
+                    }
                     if  (test_value > epsilon) side = 1;
                     else if (test_value < -epsilon) side = -1;
                     if (obs_side1 != side) { 
@@ -954,7 +959,13 @@ void painter_newell_sancha(Model3D* model, int face_count) {
                         break; 
                     }
             }
-            if (all_same_side) continue; // faces are ordered correctly, move to next pair
+            if (all_same_side) {
+                if (ENABLE_DEBUG_SAVE) {
+                printf("Faces %d and %d ordered by Test 4\n", f1, f2);
+                printf("a1 = %f, b1 = %f, c1 = %f, d1 = %f\n", FIXED_TO_FLOAT(a1), FIXED_TO_FLOAT(b1), FIXED_TO_FLOAT(c1), FIXED_TO_FLOAT(d1));
+                }
+                continue; // faces are ordered correctly, move to next pair
+            }
 
             skipT4:
 
@@ -971,8 +982,7 @@ void painter_newell_sancha(Model3D* model, int face_count) {
             all_opposite_side = 1;
             for (k=0; k<n1; k++) {
                 int v = faces->vertex_indices_buffer[offset1+k]-1;
-                test_value = a2*vtx->xo[v] + b2*vtx->yo[v] + c2*vtx->zo[v] + d2;
-                // test_value = a1*vtx->xo[v] + b1*vtx->yo[v] + c1*vtx->zo[v] + d1;
+                test_value = FIXED_ADD(FIXED_ADD(FIXED_ADD(FIXED_MUL_64(a2, vtx->xo[v]), FIXED_MUL_64(b2, vtx->yo[v])), FIXED_MUL_64(c2, vtx->zo[v])), d2);
                 if  (test_value > epsilon) side = 1;
                 else if (test_value < -epsilon) side = -1;
                 if (obs_side2 == side) {
@@ -1001,8 +1011,8 @@ void painter_newell_sancha(Model3D* model, int face_count) {
                 for (k=0; k<n2; k++) {
                     int v = faces->vertex_indices_buffer[offset2+k]-1;
                     int side;
-                    //test_value = a2*vtx->xo[v] + b2*vtx->yo[v] + c2*vtx->zo[v] + d2;
-                    test_value = a1*vtx->xo[v] + b1*vtx->yo[v] + c1*vtx->zo[v] + d1;
+                    // test using Fixed32 arithmetic
+                    test_value = FIXED_ADD(FIXED_ADD(FIXED_ADD(FIXED_MUL_64(a1, vtx->xo[v]), FIXED_MUL_64(b1, vtx->yo[v])), FIXED_MUL_64(c1, vtx->zo[v])), d1);
                     if  (test_value > epsilon) side = 1;
                     else side = -1;
                     if (obs_side1 == side) { 
@@ -1036,7 +1046,7 @@ void painter_newell_sancha(Model3D* model, int face_count) {
             for (k=0; k<n1; k++) {
                 int v = faces->vertex_indices_buffer[offset1+k]-1;
                 int side;
-                test_value = a2*vtx->xo[v] + b2*vtx->yo[v] + c2*vtx->zo[v] + d2;
+                test_value = FIXED_ADD(FIXED_ADD(FIXED_ADD(FIXED_MUL_64(a2, vtx->xo[v]), FIXED_MUL_64(b2, vtx->yo[v])), FIXED_MUL_64(c2, vtx->zo[v])), d2);
                 //test_value = a1*vtx->xo[v] + b1*vtx->yo[v] + c1*vtx->zo[v] + d1;
                 if  (test_value > epsilon) side = 1;
                 else side = -1;
@@ -1328,17 +1338,75 @@ void painter_newell_sancha_float(Model3D* model, int face_count) {
                 if (side == obs_side2) { all_opposite_side = 0; break; }
             }
             if (all_opposite_side) continue;
+            
             skipT5_float: ;
+        
+            // Test 6 : Test si f2 est du  côté opposé de l'observateur par rapport au plan de f1. 
+            // Si oui, f2 est derrière f1, on doit échanger l'ordre
+            obs_side1 = 0; // sign of d1: +1, -1 or 0 (inconclusive)
+            if (d1 > epsilon_f) obs_side1 = 1; 
+            else if (d1 < -epsilon_f) obs_side1 = -1;
+            else goto skipT6_float; // si l'observateur est sur le plan, on ne peut rien conclure, il faut faire d'autres tests
+            
+            all_opposite_side = 1;
+            for (k=0; k<n2; k++) {
+                    int v = faces->vertex_indices_buffer[offset2+k]-1;
+                    int side;
+                    test_val = a1*vtx->xo[v] + b1*vtx->yo[v] + c1*vtx->zo[v] + d1;
+                    if  (test_val > epsilon_f) side = 1;
+                    else side = -1;
+                    if (obs_side1 == side) { 
+                    all_opposite_side = 0; 
+                    break; 
+                    }
+            }
+            if (all_opposite_side == 0) continue;
+            // f2 n'est pas du coté opposé de l'observateur, donc f2 n'est pas derrière f1
+            else {
+            // Si on arrive ici, f2 est du même côté que l'observateur, donc f2 est devant f1
+            // on peut donc inverser l'ordre des faces
+                goto do_swap;
+            }
+            skipT6_float: ;
+
+            // Test 7 : Test si f1 est du même côté de l'observateur par rapport au plan de f2. 
+            // Si oui, f1 est devant f2, on doit échanger l'ordre
+            obs_side2 = 0; // sign of d1: +1, -1 or 0 (inconclusive)
+            if (d2 > epsilon_f) obs_side2 = 1; 
+            else if (d2 < -epsilon_f) obs_side2 = -1;
+            else goto skipT7_float; // si l'observateur est sur le plan, on ne peut rien conclure, il faut faire d'autres tests
+            all_same_side = 1;
+            for (k=0; k<n1; k++) {
+                int v = faces->vertex_indices_buffer[offset1+k]-1;
+                int side;
+                test_val = a2*vtx->xo[v] + b2*vtx->yo[v] + c2*vtx->zo[v] + d2;
+                //test_value = a1*vtx->xo[v] + b1*vtx->yo[v] + c1*vtx->zo[v] + d1;
+                if  (test_val > epsilon_f) side = 1;
+                else side = -1;
+                if (obs_side2 != side) { 
+                    all_same_side = 0; 
+                    break; 
+                    }
+            }
+                if (all_same_side == 0) goto skipT7_float;
+                // f1 n'est pas du même côté de l'observateur, donc f1 n'est pas devant f2
+                // on ne doit pas échanger l'ordre des faces
+                else {
+                    goto do_swap;
+                }
 
             // Si on arrive ici, les tests 1..5 n'ont pas conclu :
             // appliquer l'algorithme original de Newell/Newell/Sancha
             // => échanger les faces (swap) et enregistrer la paire
+            do_swap:
             {
                 int tmp = order[i]; order[i] = order[i+1]; order[i+1] = tmp;
                 swapped_local = 1;
                 // record pair in hash (f2 before f1)
                 pair_hash_insert(((uint32_t)f2<<16) | (uint32_t)f1);
             }
+
+            skipT7_float: ;
 
         } // end for
     } while (swapped_local);
@@ -2527,9 +2595,6 @@ void calculateFaceDepths(Model3D* model, Face3D* faces, int face_count) {
 
 
 
-
-
-
 // Dump face plane coefficients and depth stats to CSV
 // Columns: face,a,b,c,d,z_min,z_mean,z_max,vertex_indices
 void dumpFaceEquationsCSV(Model3D* model, const char* csv_filename) {
@@ -2541,7 +2606,17 @@ void dumpFaceEquationsCSV(Model3D* model, const char* csv_filename) {
     }
     FaceArrays3D* faces = &model->faces;
     int face_count = faces->face_count;
-    fprintf(f, "face,a,b,c,d,z_min,z_mean,z_max,vertex_indices\n");
+    // Determine maximum number of vertices in a face so we can create fixed per-vertex columns
+    int max_v = 0;
+    for (int ii = 0; ii < face_count; ++ii) {
+        if (faces->vertex_count[ii] > max_v) max_v = faces->vertex_count[ii];
+    }
+    // Header: base columns + per-vertex groups (vN_idx,vN_xo,vN_yo,vN_zo)
+    fprintf(f, "face,a,b,c,d,z_min,z_mean,z_max,vertex_indices");
+    for (int k = 0; k < max_v; ++k) {
+        fprintf(f, ",v%d_idx,v%d_xo,v%d_yo,v%d_zo", k+1, k+1, k+1, k+1);
+    }
+    fprintf(f, "\n");
     for (int i = 0; i < face_count; ++i) {
         float a = FIXED_TO_FLOAT(faces->plane_a[i]);
         float b = FIXED_TO_FLOAT(faces->plane_b[i]);
@@ -2550,6 +2625,7 @@ void dumpFaceEquationsCSV(Model3D* model, const char* csv_filename) {
         float zmin = FIXED_TO_FLOAT(faces->z_min[i]);
         float zmean = FIXED_TO_FLOAT(faces->z_mean[i]);
         float zmax = FIXED_TO_FLOAT(faces->z_max[i]);
+        // Write base fields and vertex index list (kept as a quoted field)
         fprintf(f, "%d,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,\"", i, a, b, c, d, zmin, zmean, zmax);
         int offset = faces->vertex_indices_ptr[i];
         int n = faces->vertex_count[i];
@@ -2558,7 +2634,28 @@ void dumpFaceEquationsCSV(Model3D* model, const char* csv_filename) {
             int vid = faces->vertex_indices_buffer[offset + j]; // keep OBJ 1-based index
             fprintf(f, "%d", vid);
         }
-        fprintf(f, "\"\n");
+        fprintf(f, "\""); // close indices field
+
+        // Then print fixed per-vertex columns up to max_v: idx,xo,yo,zo (empty if face has fewer vertices)
+        for (int k = 0; k < max_v; ++k) {
+            if (k < n) {
+                int vid = faces->vertex_indices_buffer[offset + k]; // OBJ 1-based
+                int vidx = vid - 1;
+                if (vidx >= 0) {
+                    float xo = FIXED_TO_FLOAT(model->vertices.xo[vidx]);
+                    float yo = FIXED_TO_FLOAT(model->vertices.yo[vidx]);
+                    float zo = FIXED_TO_FLOAT(model->vertices.zo[vidx]);
+                    fprintf(f, ",%d,%.6f,%.6f,%.6f", vid, xo, yo, zo);
+                } else {
+                    // index present but coordinates missing
+                    fprintf(f, ",%d,,,", vid);
+                }
+            } else {
+                // no vertex: write four empty CSV fields
+                fprintf(f, ",,,,");
+            }
+        }
+        fprintf(f, "\n");
     }
     fclose(f);
     printf("Wrote face equations to %s (%d faces)\n", csv_filename, face_count);

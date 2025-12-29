@@ -106,7 +106,8 @@ Model* load_obj(const char* path) {
     }
 
     // Apply bbox-centering to match GS3Dp: subtract center from vertex coordinates so model is centered on load
-    if (m->vert_count > 0) {
+    // Allow disabling centering for parity testing with Pascal TestComplet via NO_AUTO_CENTER env var
+    if (m->vert_count > 0 && !getenv("NO_AUTO_CENTER")) {
         float minx = 1e30f, maxx = -1e30f, miny = 1e30f, maxy = -1e30f, minz = 1e30f, maxz = -1e30f;
         for (int i = 0; i < m->vert_count; ++i) {
             float vx = m->verts[i].x, vy = m->verts[i].y, vz = m->verts[i].z;
@@ -121,6 +122,8 @@ Model* load_obj(const char* path) {
             m->verts[i].x -= cx; m->verts[i].y -= cy; m->verts[i].z -= cz;
         }
         FILE* dbgcen = fopen(debugfn, "a"); if (dbgcen) { fprintf(dbgcen, "load_obj: applied bbox centering cx=%.6f cy=%.6f cz=%.6f\n", cx, cy, cz); fclose(dbgcen); }
+    } else {
+        FILE* dbgcen = fopen(debugfn, "a"); if (dbgcen) { fprintf(dbgcen, "load_obj: skipped bbox centering (NO_AUTO_CENTER set)\n"); fclose(dbgcen); }
     }
 
     // exit log
