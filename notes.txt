@@ -1,0 +1,11 @@
+// Trouver le plus grand coefficient en valeur absolue
+fixed32 max_coef = abs(a);
+if (abs(b) > max_coef) max_coef = abs(b);
+if (abs(c) > max_coef) max_coef = abs(c);
+if (abs(d) > max_coef) max_coef = abs(d);
+
+// Normaliser
+a = fixed_div(a, max_coef);
+b = fixed_div(b, max_coef);
+c = fixed_div(c, max_coef);
+d = fixed_div(d, max_coef);

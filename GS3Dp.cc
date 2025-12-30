@@ -351,7 +351,7 @@ static inline int normalize_deg(int deg) {
 // ============================================================================
 
 // Performance and debug configuration
-#define ENABLE_DEBUG_SAVE 0     // 1 = Enable debug save (SLOW!), 0 = Disable
+#define ENABLE_DEBUG_SAVE 1     // 1 = Enable debug save (SLOW!), 0 = Disable
 //#define PERFORMANCE_MODE 0      // 1 = Optimized performance mode, 0 = Debug mode
 // OPTIMIZATION: Performance mode - disable printf
 #define PERFORMANCE_MODE 1      // 1 = no printf, 0 = normal printf
@@ -835,8 +835,8 @@ void painter_newell_sancha(Model3D* model, int face_count) {
 
     // Structure pour stocker les paires de faces ordonnées
     typedef struct {
-        int face1;  // Face qui doit être avant
-        int face2;  // Face qui doit être après
+        int face1;  // Face qui doit être avant = la plus éloignée
+        int face2;  // Face qui doit être après = la plus proche
     } OrderedPair;
     
     // Préallocation unique : meilleure performance en évitant realloc fréquents.
@@ -868,11 +868,23 @@ void painter_newell_sancha(Model3D* model, int face_count) {
         int t6 = 0;
         int t7 = 0;
 
+
+
         for (i = 0; i < face_count-1; i++) {
             int f1 = faces->sorted_face_indices[i];
             int f2 = faces->sorted_face_indices[i+1];
-            
-            
+
+            // show faces to be tested (only in debug mode)
+            if (ENABLE_DEBUG_SAVE) {
+                startgraph(mode);
+                drawFace(model, f1);
+                keypress();
+                drawFace(model, f2);
+                keypress();
+                endgraph();
+                DoText();
+            }
+
             // Vérifier si cette paire a déjà été ordonnée définitivement
             int already_ordered = 0;
             int p;
@@ -934,32 +946,46 @@ void painter_newell_sancha(Model3D* model, int face_count) {
             // Si oui, f2 est bien devant f1, pas d'échange.
             if (ENABLE_DEBUG_SAVE) {
             printf("Test 4 : Testing faces %d and %d\n", f1, f2);
+            printf("face coefficients: a1=%f, b1=%f, c1=%f, d1=%f\n", FIXED_TO_FLOAT(a1), FIXED_TO_FLOAT(b1), FIXED_TO_FLOAT(c1), FIXED_TO_FLOAT(d1));
             }
             obs_side1 = 0; // sign of d1: +1, -1 or 0 (inconclusive)
             if (d1 > epsilon) obs_side1 = 1; 
             else if (d1 < -epsilon) obs_side1 = -1;
             else goto skipT4; // si l'observateur est sur le plan, on ne peut rien conclure, il faut faire d'autres tests
-            
             all_same_side = 1;
+
+            if (ENABLE_DEBUG_SAVE) {
+                printf("FOR lopp start\n");
+                printf("obs_side1 = %d\n", obs_side1);
+                printf("obs_side1 is positive ? %s\n", (obs_side1 == 1) ? "yes" : "no");
+                printf("test_values for face %d must be of the same sign as obs_side1\n", f2);
+            }
             for (k=0; k<n2; k++) {
                     int v = faces->vertex_indices_buffer[offset2+k]-1;
                     test_value = FIXED_ADD(FIXED_ADD(FIXED_ADD(FIXED_MUL_64(a1, vtx->xo[v]), FIXED_MUL_64(b1, vtx->yo[v])), FIXED_MUL_64(c1, vtx->zo[v])), d1);
                     if (ENABLE_DEBUG_SAVE) {
-                        printf("test_value = %f\n", FIXED_TO_FLOAT(test_value));
                         printf("k = %d, vertex index = %d, vtx = (%f, %f, %f)\n", k, v+1, FIXED_TO_FLOAT(vtx->xo[v]), FIXED_TO_FLOAT(vtx->yo[v]), FIXED_TO_FLOAT(vtx->zo[v]));
+                        printf("test_value = %f\n", FIXED_TO_FLOAT(test_value));
                     }
                     if  (test_value > epsilon) side = 1;
                     else if (test_value < -epsilon) side = -1;
                     if (obs_side1 != side) { 
                         // si un vertex est de l'autre coté, on sort de la boucle
                         // et on met le flag à 0 pour indiquer que le test a échoué (et passer au test suivant)
-                        all_same_side = 0;   
+                        all_same_side = 0; 
+                        if (ENABLE_DEBUG_SAVE) {
+                            printf("Test 4 failed for faces %d and %d\n", f1, f2);
+                        }  
                         break; 
                     }
             }
+            if (ENABLE_DEBUG_SAVE) {
+                printf("FOR lopp stop\n");
+            }
+
             if (all_same_side) {
                 if (ENABLE_DEBUG_SAVE) {
-                printf("Faces %d and %d ordered by Test 4\n", f1, f2);
+                printf("Test 4 passed for Faces %d and %d\n", f1, f2);
                 printf("a1 = %f, b1 = %f, c1 = %f, d1 = %f\n", FIXED_TO_FLOAT(a1), FIXED_TO_FLOAT(b1), FIXED_TO_FLOAT(c1), FIXED_TO_FLOAT(d1));
                 }
                 continue; // faces are ordered correctly, move to next pair
@@ -1048,10 +1074,11 @@ void painter_newell_sancha(Model3D* model, int face_count) {
                     break; 
                     }
             }
-                if (all_same_side == 0) goto skipT7;
-                else {
                 // f1 n'est pas du même côté de l'observateur, donc f1 n'est pas devant f2
                 // on ne doit pas échanger l'ordre des faces
+                if (all_same_side == 0) goto skipT7;
+
+                else {
                     goto do_swap;
                 }
 
@@ -2590,8 +2617,10 @@ void calculateFaceDepths(Model3D* model, Face3D* faces, int face_count) {
 
 
 // Dump face plane coefficients and depth stats to CSV
-// Columns: face,a,b,c,d,z_min,z_mean,z_max,vertex_indices
-void dumpFaceEquationsCSV(Model3D* model, const char* csv_filename) {
+// Columns: face;a;b;c;d;z_min;z_mean;z_max;vertex_indices (or CSV style depending on flag)
+// New signature: last parameter 'alt_format' == 0 -> default (commas and dot decimal)
+//                                   == 1 -> use semicolon column separator and comma decimal separator
+void dumpFaceEquationsCSV(Model3D* model, const char* csv_filename, int alt_format) {
     if (model == NULL || csv_filename == NULL) return;
     FILE* f = fopen(csv_filename, "w");
     if (!f) {
@@ -2600,17 +2629,39 @@ void dumpFaceEquationsCSV(Model3D* model, const char* csv_filename) {
     }
     FaceArrays3D* faces = &model->faces;
     int face_count = faces->face_count;
+
+    char col_sep = alt_format ? ';' : ',';
+    int use_comma_decimal = alt_format ? 1 : 0;
+
     // Determine maximum number of vertices in a face so we can create fixed per-vertex columns
     int max_v = 0;
     for (int ii = 0; ii < face_count; ++ii) {
         if (faces->vertex_count[ii] > max_v) max_v = faces->vertex_count[ii];
     }
+
     // Header: base columns + per-vertex groups (vN_idx,vN_xo,vN_yo,vN_zo)
-    fprintf(f, "face,a,b,c,d,z_min,z_mean,z_max,vertex_indices");
+    // Use selected column separator
+    fprintf(f, "face"); fprintf(f, "%c", col_sep);
+    fprintf(f, "a"); fprintf(f, "%c", col_sep);
+    fprintf(f, "b"); fprintf(f, "%c", col_sep);
+    fprintf(f, "c"); fprintf(f, "%c", col_sep);
+    fprintf(f, "d"); fprintf(f, "%c", col_sep);
+    fprintf(f, "z_min"); fprintf(f, "%c", col_sep);
+    fprintf(f, "z_mean"); fprintf(f, "%c", col_sep);
+    fprintf(f, "z_max"); fprintf(f, "%c", col_sep);
+    fprintf(f, "vertex_indices");
     for (int k = 0; k < max_v; ++k) {
-        fprintf(f, ",v%d_idx,v%d_xo,v%d_yo,v%d_zo", k+1, k+1, k+1, k+1);
+        fprintf(f, "%c", col_sep);
+        fprintf(f, "v%d_idx", k+1);
+        fprintf(f, "%c", col_sep);
+        fprintf(f, "v%d_xo", k+1);
+        fprintf(f, "%c", col_sep);
+        fprintf(f, "v%d_yo", k+1);
+        fprintf(f, "%c", col_sep);
+        fprintf(f, "v%d_zo", k+1);
     }
     fprintf(f, "\n");
+
     for (int i = 0; i < face_count; ++i) {
         float a = FIXED_TO_FLOAT(faces->plane_a[i]);
         float b = FIXED_TO_FLOAT(faces->plane_b[i]);
@@ -2619,8 +2670,25 @@ void dumpFaceEquationsCSV(Model3D* model, const char* csv_filename) {
         float zmin = FIXED_TO_FLOAT(faces->z_min[i]);
         float zmean = FIXED_TO_FLOAT(faces->z_mean[i]);
         float zmax = FIXED_TO_FLOAT(faces->z_max[i]);
-        // Write base fields and vertex index list (kept as a quoted field)
-        fprintf(f, "%d,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,\"", i, a, b, c, d, zmin, zmean, zmax);
+
+        char buf[64];
+        // face index
+        fprintf(f, "%d", i);
+        fprintf(f, "%c", col_sep);
+
+        // Helper: print float value respecting decimal separator
+        #define PRINTF_FLOAT(val) do { snprintf(buf, sizeof(buf), "%.6f", (double)(val)); if (use_comma_decimal) { for (char *_p = buf; *_p; ++_p) if (*_p == '.') *_p = ','; } fprintf(f, "%s", buf); } while(0)
+
+        PRINTF_FLOAT(a); fprintf(f, "%c", col_sep);
+        PRINTF_FLOAT(b); fprintf(f, "%c", col_sep);
+        PRINTF_FLOAT(c); fprintf(f, "%c", col_sep);
+        PRINTF_FLOAT(d); fprintf(f, "%c", col_sep);
+        PRINTF_FLOAT(zmin); fprintf(f, "%c", col_sep);
+        PRINTF_FLOAT(zmean); fprintf(f, "%c", col_sep);
+        PRINTF_FLOAT(zmax);
+
+        // vertex_indices as quoted field (space-separated)
+        fprintf(f, "%c\"", col_sep);
         int offset = faces->vertex_indices_ptr[i];
         int n = faces->vertex_count[i];
         for (int j = 0; j < n; ++j) {
@@ -2639,14 +2707,19 @@ void dumpFaceEquationsCSV(Model3D* model, const char* csv_filename) {
                     float xo = FIXED_TO_FLOAT(model->vertices.xo[vidx]);
                     float yo = FIXED_TO_FLOAT(model->vertices.yo[vidx]);
                     float zo = FIXED_TO_FLOAT(model->vertices.zo[vidx]);
-                    fprintf(f, ",%d,%.6f,%.6f,%.6f", vid, xo, yo, zo);
+                    // idx
+                    fprintf(f, "%c%d", col_sep, vid);
+                    // xo, yo, zo
+                    snprintf(buf, sizeof(buf), "%.6f", (double)xo); if (use_comma_decimal) for (char *_p = buf; *_p; ++_p) if (*_p == '.') *_p = ','; fprintf(f, "%c%s", col_sep, buf);
+                    snprintf(buf, sizeof(buf), "%.6f", (double)yo); if (use_comma_decimal) for (char *_p = buf; *_p; ++_p) if (*_p == '.') *_p = ','; fprintf(f, "%c%s", col_sep, buf);
+                    snprintf(buf, sizeof(buf), "%.6f", (double)zo); if (use_comma_decimal) for (char *_p = buf; *_p; ++_p) if (*_p == '.') *_p = ','; fprintf(f, "%c%s", col_sep, buf);
                 } else {
                     // index present but coordinates missing
-                    fprintf(f, ",%d,,,", vid);
+                    fprintf(f, "%c%d%c%c%c", col_sep, vid, col_sep, col_sep, col_sep);
                 }
             } else {
                 // no vertex: write four empty CSV fields
-                fprintf(f, ",,,,");
+                fprintf(f, "%c%c%c%c", col_sep, col_sep, col_sep, col_sep);
             }
         }
         fprintf(f, "\n");
@@ -2654,6 +2727,7 @@ void dumpFaceEquationsCSV(Model3D* model, const char* csv_filename) {
     fclose(f);
     printf("Wrote face equations to %s (%d faces)\n", csv_filename, face_count);
 }
+
 
 /* Vertex-based distance helpers removed */
 
@@ -2707,6 +2781,117 @@ void fitModelToView(Model3D* model, ObserverParams* params, float target_max_dim
         faces->sorted_face_indices[i] = faces->sorted_face_indices[j]; \
         faces->sorted_face_indices[j] = temp_idx; \
     } while (0)
+
+
+// Draw a single face (by face index) using the same QuickDraw path as drawPolygons
+// - respects face validity and display_flag
+// - uses globalPolyHandle and poly_handle_locked like drawPolygons
+// - honors framePolyOnly for frame-only rendering
+void drawFace(Model3D* model, int face_id) {
+    if (!model) return;
+    FaceArrays3D* faces = &model->faces;
+    VertexArrays3D* vtx = &model->vertices;
+    if (face_id < 0 || face_id >= faces->face_count) return;
+    if (faces->display_flag[face_id] == 0) return;
+    int vcount_face = faces->vertex_count[face_id];
+    if (vcount_face < 3) return;
+
+    int offset = faces->vertex_indices_ptr[face_id];
+    int *indices_base = &faces->vertex_indices_buffer[offset];
+
+    // Quick validity pass
+    for (int j = 0; j < vcount_face; ++j) {
+        int vi = indices_base[j] - 1;
+        if (vi < 0 || vi >= vtx->vertex_count) return; // invalid face -> nothing to draw
+    }
+
+    // Ensure global handle exists
+    if (globalPolyHandle == NULL) {
+        int max_polySize = 2 + 8 + (4 * 4);  // Max for quad (4 vertices)
+        globalPolyHandle = NewHandle((long)max_polySize, userid(), 0xC014, 0L);
+        if (globalPolyHandle == NULL) {
+            printf("Error: Unable to allocate global polygon handle\n");
+            return;
+        }
+    }
+
+    Handle polyHandle = globalPolyHandle;
+    if (poly_handle_locked) { HUnlock(polyHandle); poly_handle_locked = 0; }
+    HLock(polyHandle); poly_handle_locked = 1;
+
+    DynamicPolygon *poly = (DynamicPolygon *)*polyHandle;
+    int polySize = 2 + 8 + (vcount_face * 4);
+    poly->polySize = polySize;
+
+    int *x2d = vtx->x2d;
+    int *y2d = vtx->y2d;
+
+    // Initialize first point
+    int first_vi = indices_base[0] - 1;
+    int px = x2d[first_vi];
+    int py = y2d[first_vi];
+    poly->polyPoints[0].h = mode / 320 * px;
+    poly->polyPoints[0].v = py;
+    int min_x = px, max_x = px, min_y = py, max_y = py;
+
+    for (int j = 1; j < vcount_face; ++j) {
+        int vi = indices_base[j] - 1;
+        px = x2d[vi];
+        py = y2d[vi];
+        poly->polyPoints[j].h = mode / 320 * px;
+        poly->polyPoints[j].v = py;
+        if (px < min_x) min_x = px;
+        if (px > max_x) max_x = px;
+        if (py < min_y) min_y = py;
+        if (py > max_y) max_y = py;
+    }
+
+    poly->polyBBox.h1 = min_x;
+    poly->polyBBox.v1 = min_y;
+    poly->polyBBox.h2 = max_x;
+    poly->polyBBox.v2 = max_y;
+
+    int screenScale = mode / 320;
+    int screenW = screenScale * (CENTRE_X * 2);
+    int screenH = screenScale * (CENTRE_Y * 2);
+
+    int sc_min_x = screenScale * min_x;
+    int sc_max_x = screenScale * max_x;
+    int sc_min_y = screenScale * min_y;
+    int sc_max_y = screenScale * max_y;
+    if (sc_max_x < 0 || sc_min_x >= screenW || sc_max_y < 0 || sc_min_y >= screenH) {
+        // Off-screen; nothing to draw
+    } else {
+        if (framePolyOnly) {
+            SetSolidPenPat(7);
+            FramePoly(polyHandle);
+            SetSolidPenPat(14);
+        } else {
+            Pattern pat;
+            GetPenPat(pat);
+            FillPoly(polyHandle, pat);
+            SetSolidPenPat(7);
+            FramePoly(polyHandle);
+            SetSolidPenPat(14);
+        }
+
+        // Draw face index centered in the polygon using QuickDraw MoveTo + DrawString
+        int center_x = (min_x + max_x) / 2;
+        int center_y = (min_y + max_y) / 2;
+        int screenCx = screenScale * center_x; // horizontal is scaled
+        int screenCy = center_y;              // vertical not scaled in this codebase
+
+        char tmp[32];
+        int len = snprintf(tmp, sizeof(tmp), "%d", face_id);
+        if (len > 15) len = 15; // fit into Pascal string buffer
+        unsigned char pstr[16];
+        pstr[0] = (unsigned char)len;
+        memcpy(&pstr[1], tmp, len);
+
+        MoveTo(screenCx, screenCy);
+        DrawString(pstr);
+    }
+}
 
 
 // Function to draw polygons with QuickDraw
@@ -3216,7 +3401,8 @@ case 112: // 'p'
             case 69:  // 'E' - dump face equations to equ.csv
             case 101: // 'e'
                 if (model != NULL) {
-                    dumpFaceEquationsCSV(model, "equ.csv");
+                    // Use semicolon column separators and comma decimal separator
+                    dumpFaceEquationsCSV(model, "equ.csv", 1);
                 }
                 goto loopReDraw;
 
