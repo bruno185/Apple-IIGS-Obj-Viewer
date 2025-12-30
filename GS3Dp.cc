@@ -766,41 +766,7 @@ void painter_newell_sancha_fast(Model3D* model, int face_count) {
     qsort(faces->sorted_face_indices, face_count, sizeof(int), cmp_faces_by_zmean);
     qsort_faces_ptr_for_cmp = NULL;
 
-/*    2. Correction stricte d'ordre avec les trois tests de plan (Newell/Sancha)
-    int swapped;
-    int pass = 0;
-    const int max_passes = face_count * 2; // safety cap
-    do {
-        swapped = 0;
-        int i;
-        for (i = 0; i < face_count - 1; i++) {
-            int f1 = faces->sorted_face_indices[i];
-            int f2 = faces->sorted_face_indices[i+1];
 
-            // Test 1: Depth overlap
-            if (faces->z_max[f2] <= faces->z_min[f1]) continue;
-            if (faces->z_max[f1] < faces->z_min[f2]) {
-                // Swap needed
-                faces->sorted_face_indices[i] = f2;
-                faces->sorted_face_indices[i+1] = f1;
-                swapped = 1;
-                continue;
-            }
-
-            // Test 2: X overlap
-            int minx1 = faces->minx[f1], maxx1 = faces->maxx[f1];
-            int minx2 = faces->minx[f2], maxx2 = faces->maxx[f2];
-            if (maxx1 <= minx2 || maxx2 <= minx1) continue;
-
-            // Test 3: Y overlap
-            int miny1 = faces->miny[f1], maxy1 = faces->maxy[f1];
-            int miny2 = faces->miny[f2], maxy2 = faces->maxy[f2];
-            if (maxy1 <= miny2 || maxy2 <= miny1) continue;
-
-
-        }
-        pass++;
-    } while (swapped && pass < max_passes); */
 }
 
 void painter_newell_sancha(Model3D* model, int face_count) {
@@ -828,10 +794,11 @@ void painter_newell_sancha(Model3D* model, int face_count) {
         printf("[TIMING] initial sort (qsort): %ld ticks (%.2f ms)\n", elapsed, ms);
     }
     
-    // 3. Correction stricte d'ordre avec les deux tests de plan (Newell/Sancha)
+    // Correction stricte d'ordre avec les deux tests de plan (Newell/Sancha)
     
     int swap_count = 0;
     int swapped = 0; // flag utilisé par la boucle de correction
+    int inconclusive = 0; // compteur de paires non résolues
 
 
     // Structure pour stocker les paires de faces ordonnées
@@ -853,14 +820,11 @@ void painter_newell_sancha(Model3D* model, int face_count) {
     }
     int ordered_pairs_count = 0;
 
-    // Oscillation / runaway protection
-    int pass_number = 0;
-    const int max_passes = 2000; // safety cap to avoid infinite loops
-    unsigned int last_checksum = 0;
-    unsigned int prev_checksum = 0;
 
+    // Tri à bulle des faces avec correction d'ordre
     do {
         swapped = 0;
+   
         int t1 = 0;
         int t2 = 0;
         int t3 = 0;
@@ -870,7 +834,7 @@ void painter_newell_sancha(Model3D* model, int face_count) {
         int t7 = 0;
 
 
-
+        // Parcours des paires consécutives
         for (i = 0; i < face_count-1; i++) {
             int f1 = faces->sorted_face_indices[i];
             int f2 = faces->sorted_face_indices[i+1];
@@ -958,7 +922,7 @@ void painter_newell_sancha(Model3D* model, int face_count) {
             all_same_side = 1;
 
             if (ENABLE_DEBUG_SAVE) {
-                printf("FOR lopp start\n");
+                printf("FOR loop start\n");
                 printf("obs_side1 = %d\n", obs_side1);
                 printf("test_values for face %d must be of the same sign as obs_side1\n", f2);
             }
@@ -982,12 +946,13 @@ void painter_newell_sancha(Model3D* model, int face_count) {
                         all_same_side = 0; 
                         if (ENABLE_DEBUG_SAVE) {
                             printf("Test 4 failed for faces %d and %d\n", f1, f2);
+                            
                         }  
                         break; 
                         }
             }
             if (ENABLE_DEBUG_SAVE) {
-                printf("FOR lopp stop\n");
+                printf("FOR loop stop\n");
             }
 
             // test 4 passed
@@ -1017,7 +982,7 @@ void painter_newell_sancha(Model3D* model, int face_count) {
             all_opposite_side = 1;
 
             if (ENABLE_DEBUG_SAVE) {
-                printf("FOR lopp start\n");
+                printf("FOR loop start\n");
                 printf("obs_side2 = %d\n", obs_side2);
                 printf("test_values for face %d must be of the opposite sign as obs_side2\n", f1);
             }
@@ -1065,7 +1030,7 @@ void painter_newell_sancha(Model3D* model, int face_count) {
 
             all_opposite_side = 1;
             if (ENABLE_DEBUG_SAVE) {
-                printf("FOR lopp start\n");
+                printf("FOR loop start\n");
                 printf("obs_side1 = %d\n", obs_side1);
                 printf("test_values for face %d must be of the opposite sign as obs_side1\n", f2);
             }
@@ -1105,6 +1070,7 @@ void painter_newell_sancha(Model3D* model, int face_count) {
 
 
             skipT6: ;
+
             // ********************* TEST 7 *********************
             t7++;
             // Test 7 : Test si f1 est du même côté de l'observateur par rapport au plan de f2. 
@@ -1163,36 +1129,44 @@ void painter_newell_sancha(Model3D* model, int face_count) {
                     ordered_pairs[ordered_pairs_count].face2 = f1;
                     ordered_pairs_count++;
                 }
+                goto endfor;
             }
 
-        skipT7: ;
+        
+        skipT7: 
+        // Si on arrive ici, c'est que auncun test n'a pas permis de conclure
+        // 0n devrait découper f1 par f2 (ou inversement), mais on ne le fait pas pour l'instant
+        inconclusive += 1;
         if (ENABLE_DEBUG_SAVE){
                 printf("NON CONCLUTANT POUR LES FACES %d ET %d\n", f1, f2);
                 keypress();
         }
         // on les met dans la liste des paires ordonnées pour ne plus les tester
+        // puisque les tests n'ont pas permis de conclure,l'ordre actuel est conservé
         if (ordered_pairs != NULL && ordered_pairs_count < ordered_pairs_capacity) {
                 ordered_pairs[ordered_pairs_count].face1 = f2;
                 ordered_pairs[ordered_pairs_count].face2 = f1;
                 ordered_pairs_count++;
-        }
-        // keypress();
-        // Ici, on devrait découper f1 par f2 (ou inversement), mais on ne le fait pas pour l'instant
-        }
-        if (ENABLE_DEBUG_SAVE) {printf("Pass completed, swaps this pass: %d\n", swap_count);
-                // removed blocking keypress();
-        if (swapped) {
-                printf("swapped = %d\n", swapped);
-                keypress();
-                }
-        }
+            }
+        
+        endfor: ;
+        } // FIN de la boucle for int i=0; i<face_count-1; i++
+
 
         if (ENABLE_DEBUG_SAVE) {
-        printf("t1=%d t2=%d t3=%d t4=%d t5=%d t6=%d t7=%d\n", t1, t2, t3, t4, t5, t6, t7);
-        keypress();
+            printf("Pass completed, swaps this pass: %d\n", swap_count);
+            printf("t1=%d t2=%d t3=%d t4=%d t5=%d t6=%d t7=%d\n", t1, t2, t3, t4, t5, t6, t7);
+            keypress();
         }
 
     } while (swapped);
+
+    
+    if (ENABLE_DEBUG_SAVE) {
+        printf("Total swaps: %d, Inconclusive pairs: %d\n", swap_count, inconclusive);
+        if (inconclusive > 0) keypress();
+    }
+    
     
     // Libérer la mémoire de la liste des paires ordonnées
     if (ordered_pairs) {
@@ -3098,6 +3072,38 @@ void drawPolygons(Model3D* model, int* vertex_count, int face_count, int vertex_
 //     printf("Triangles: %d, Quads: %d\n", triangle_count, quad_count);
 }
 
+// Simple helper: compute 2D projected coordinates from observer-space coords and a projection scale
+// Minimal version taking only Model3D* and angle_w (uses global projection scale)
+// - model: model containing vertices and x2d/y2d output arrays
+// - angle_w: final 2D rotation angle (degrees)
+// This function performs no checks and is purposely minimal as requested.
+void compute2DFromObserver(Model3D* model, int angle_w) {
+    VertexArrays3D* vtx = &model->vertices;
+    int vcount = vtx->vertex_count;
+    Fixed32* xo = vtx->xo; Fixed32* yo = vtx->yo; Fixed32* zo = vtx->zo;
+    int* x2d_out = vtx->x2d; int* y2d_out = vtx->y2d;
+    Fixed32 scale = s_global_proj_scale_fixed;
+    // Update model's stored projection scale to reflect the scale used
+    model->auto_proj_scale = scale;
+
+    const Fixed32 centre_x_f = INT_TO_FIXED(CENTRE_X);
+    const Fixed32 centre_y_f = INT_TO_FIXED(CENTRE_Y);
+    Fixed32 cos_w = cos_deg_int(angle_w);
+    Fixed32 sin_w = sin_deg_int(angle_w);
+    for (int i = 0; i < vcount; ++i) {
+        Fixed32 xo_i = xo[i];
+        Fixed32 yo_i = yo[i];
+        Fixed32 zo_i = zo[i];
+        Fixed32 inv_zo = FIXED_DIV_64(scale, zo_i);
+        Fixed32 x2d_temp = FIXED_ADD(FIXED_MUL_64(xo_i, inv_zo), centre_x_f);
+        Fixed32 y2d_temp = FIXED_SUB(centre_y_f, FIXED_MUL_64(yo_i, inv_zo));
+        Fixed32 rx = FIXED_ADD(FIXED_SUB(FIXED_MUL_64(cos_w, FIXED_SUB(x2d_temp, centre_x_f)), FIXED_MUL_64(sin_w, FIXED_SUB(centre_y_f, y2d_temp))), centre_x_f);
+        Fixed32 ry = FIXED_SUB(centre_y_f, FIXED_ADD(FIXED_MUL_64(sin_w, FIXED_SUB(x2d_temp, centre_x_f)), FIXED_MUL_64(cos_w, FIXED_SUB(centre_y_f, y2d_temp))));
+        x2d_out[i] = FIXED_ROUND_TO_INT(rx);
+        y2d_out[i] = FIXED_ROUND_TO_INT(ry);
+    }
+}
+
 void DoColor() {
         Rect r;
         unsigned char pstr[4];  // Pascal string: [length][characters...]]
@@ -3375,7 +3381,8 @@ void DoText() {
                 } else {
                     printf("No model loaded.\n");
                 }
-                goto bigloop;
+                compute2DFromObserver(model, params.angle_w);
+                goto loopReDraw;
 
             case 45:  // '-' - ensure auto-fit then decrease distance by 10%
                 if (model != NULL) {
@@ -3394,7 +3401,8 @@ void DoText() {
                 } else {
                     printf("No model loaded.\n");
                 }
-                goto bigloop;
+                compute2DFromObserver(model, params.angle_w);
+                goto loopReDraw;
 
             case 65:  // 'A' - decrease distance
             case 97:  // 'a'
