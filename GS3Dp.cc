@@ -318,6 +318,7 @@ static inline int FIXED_ROUND_TO_INT(Fixed32 x) {
 }
 #define FLOAT_TO_FIXED(x)   ((Fixed32)((x) * FIXED_SCALE))
 #define FIXED_TO_FLOAT(x)   ((float)(x) / (float)FIXED_SCALE)
+#define FIXED64_TO_FLOAT(x)  ((double)(x) / (double)FIXED_SCALE)
 
 // Arithmetic operations
 #define FIXED_ADD(a, b)     ((a) + (b))
@@ -351,7 +352,7 @@ static inline int normalize_deg(int deg) {
 // ============================================================================
 
 // Performance and debug configuration
-#define ENABLE_DEBUG_SAVE 1     // 1 = Enable debug save (SLOW!), 0 = Disable
+#define ENABLE_DEBUG_SAVE 0     // 1 = Enable debug save (SLOW!), 0 = Disable
 //#define PERFORMANCE_MODE 0      // 1 = Optimized performance mode, 0 = Debug mode
 // OPTIMIZATION: Performance mode - disable printf
 #define PERFORMANCE_MODE 1      // 1 = no printf, 0 = normal printf
@@ -362,8 +363,8 @@ static inline int normalize_deg(int deg) {
 #define MAX_FACE_VERTICES 6     // Maximum vertices per face (triangles/quads/hexagons)
 #define CENTRE_X 160            // Screen center in X (320/2)
 #define CENTRE_Y 100            // Screen center in Y (200/2)
-//#define mode 640               // Graphics mode 640x200 pixels
-#define mode 320               // Graphics mode 320x200 pixels
+//#define mode 640              // Graphics mode 640x200 pixels
+#define mode 320                // Graphics mode 320x200 pixels
 
 // ============================================================================
 //                          DATA STRUCTURES
@@ -434,10 +435,10 @@ typedef struct {
     Fixed32 *z_min;
     Fixed32 *z_max;
     Fixed32 *z_mean;                     // Mean zo per face (computed in calculateFaceDepths)
-    Fixed32 *plane_a;                     // per-face normalized normal X (a)
-    Fixed32 *plane_b;                     // per-face normalized normal Y (b)
-    Fixed32 *plane_c;                     // per-face normalized normal Z (c)
-    Fixed32 *plane_d;                     // per-face D term for plane equation
+    Fixed64 *plane_a;                     // per-face normalized normal X (a) stored as Fixed64 (16.16)
+    Fixed64 *plane_b;                     // per-face normalized normal Y (b) stored as Fixed64 (16.16)
+    Fixed64 *plane_c;                     // per-face normalized normal Z (c) stored as Fixed64 (16.16)
+    Fixed64 *plane_d;                     // per-face D term for plane equation stored as Fixed64 (16.16)
     int *minx;                            // cached 2D bounding box (projected x/y)
     int *maxx;
     int *miny;
@@ -924,14 +925,14 @@ void painter_newell_sancha(Model3D* model, int face_count) {
             int offset1 = faces->vertex_indices_ptr[f1];
             int offset2 = faces->vertex_indices_ptr[f2];
             int k;
-            Fixed32 a1 = faces->plane_a[f1];
-            Fixed32 b1 = faces->plane_b[f1];
-            Fixed32 c1 = faces->plane_c[f1];
-            Fixed32 d1 = faces->plane_d[f1];
-            Fixed32 a2 = faces->plane_a[f2];
-            Fixed32 b2 = faces->plane_b[f2];
-            Fixed32 c2 = faces->plane_c[f2];
-            Fixed32 d2 = faces->plane_d[f2];
+            Fixed64 a1 = faces->plane_a[f1];
+            Fixed64 b1 = faces->plane_b[f1];
+            Fixed64 c1 = faces->plane_c[f1];
+            Fixed64 d1 = faces->plane_d[f1];
+            Fixed64 a2 = faces->plane_a[f2];
+            Fixed64 b2 = faces->plane_b[f2];
+            Fixed64 c2 = faces->plane_c[f2];
+            Fixed64 d2 = faces->plane_d[f2];
             Fixed32 epsilon = FLOAT_TO_FIXED(0.000001f);
 
             int obs_side1 = 0; // côté de l'observateur par rapport au plan de f1 : +1, -1 ou 0 (inconclusive)
@@ -939,36 +940,42 @@ void painter_newell_sancha(Model3D* model, int face_count) {
             int side;           // coté du vertex.
             int all_same_side; // flag pour indiquer si tous les vertex sont du même coté
             int all_opposite_side; // flag pour indiquer si tous les vertex sont du coté opposé
-            Fixed32 test_value;
+            /* test_value replaced by Fixed64 accumulators inside loops to avoid Fixed32 overflow */
+            Fixed64 test_value64 = 0;
 
+            // ********************* TEST 4 *********************
             t4++;
-            // Test 4 : Test si f2 est du même côté que l'observatur par rapport au plan de f1. 
+            // Test si f2 est du même côté que l'observatur par rapport au plan de f1. 
             // Si oui, f2 est bien devant f1, pas d'échange.
             if (ENABLE_DEBUG_SAVE) {
-            printf("Test 4 : Testing faces %d and %d\n", f1, f2);
-            printf("face coefficients: a1=%f, b1=%f, c1=%f, d1=%f\n", FIXED_TO_FLOAT(a1), FIXED_TO_FLOAT(b1), FIXED_TO_FLOAT(c1), FIXED_TO_FLOAT(d1));
+            printf("\n**** Test 4 : Testing faces %d and %d\n", f1, f2);
+            printf("Face coefs: a1=%f, b1=%f, c1=%f, d1=%f\n", FIXED64_TO_FLOAT(a1), FIXED64_TO_FLOAT(b1), FIXED64_TO_FLOAT(c1), FIXED64_TO_FLOAT(d1));
             }
             obs_side1 = 0; // sign of d1: +1, -1 or 0 (inconclusive)
-            if (d1 > epsilon) obs_side1 = 1; 
-            else if (d1 < -epsilon) obs_side1 = -1;
+            if (d1 > (Fixed64)epsilon) obs_side1 = 1; 
+            else if (d1 < -(Fixed64)epsilon) obs_side1 = -1;
             else goto skipT4; // si l'observateur est sur le plan, on ne peut rien conclure, il faut faire d'autres tests
             all_same_side = 1;
 
             if (ENABLE_DEBUG_SAVE) {
                 printf("FOR lopp start\n");
                 printf("obs_side1 = %d\n", obs_side1);
-                printf("obs_side1 is positive ? %s\n", (obs_side1 == 1) ? "yes" : "no");
                 printf("test_values for face %d must be of the same sign as obs_side1\n", f2);
             }
             for (k=0; k<n2; k++) {
                     int v = faces->vertex_indices_buffer[offset2+k]-1;
-                    test_value = FIXED_ADD(FIXED_ADD(FIXED_ADD(FIXED_MUL_64(a1, vtx->xo[v]), FIXED_MUL_64(b1, vtx->yo[v])), FIXED_MUL_64(c1, vtx->zo[v])), d1);
+                    /* Accumulate in 64-bit to avoid overflow (each product is >> FIXED_SHIFT to keep Fixed32 scale) */
+                    Fixed64 acc = 0;
+                    acc  = (((Fixed64)a1 * (Fixed64)vtx->xo[v]) >> FIXED_SHIFT);
+                    acc += (((Fixed64)b1 * (Fixed64)vtx->yo[v]) >> FIXED_SHIFT);
+                    acc += (((Fixed64)c1 * (Fixed64)vtx->zo[v]) >> FIXED_SHIFT);
+                    acc += (Fixed64)d1; // d1 already Fixed32 scale
                     if (ENABLE_DEBUG_SAVE) {
                         printf("k = %d, vertex index = %d, vtx = (%f, %f, %f)\n", k, v+1, FIXED_TO_FLOAT(vtx->xo[v]), FIXED_TO_FLOAT(vtx->yo[v]), FIXED_TO_FLOAT(vtx->zo[v]));
-                        printf("test_value = %f\n", FIXED_TO_FLOAT(test_value));
+                        printf("test_value = %f\n", ((double)acc) / FIXED_SCALE);
                     }
-                    if  (test_value > epsilon) side = 1;
-                    else if (test_value < -epsilon) side = -1;
+                    if  (acc > (Fixed64)epsilon) side = 1;
+                    else if (acc < -(Fixed64)epsilon) side = -1;
                     if (obs_side1 != side) { 
                         // si un vertex est de l'autre coté, on sort de la boucle
                         // et on met le flag à 0 pour indiquer que le test a échoué (et passer au test suivant)
@@ -977,79 +984,128 @@ void painter_newell_sancha(Model3D* model, int face_count) {
                             printf("Test 4 failed for faces %d and %d\n", f1, f2);
                         }  
                         break; 
-                    }
+                        }
             }
             if (ENABLE_DEBUG_SAVE) {
                 printf("FOR lopp stop\n");
             }
 
-            if (all_same_side) {
+            // test 4 passed
+            if (all_same_side) { 
                 if (ENABLE_DEBUG_SAVE) {
                 printf("Test 4 passed for Faces %d and %d\n", f1, f2);
-                printf("a1 = %f, b1 = %f, c1 = %f, d1 = %f\n", FIXED_TO_FLOAT(a1), FIXED_TO_FLOAT(b1), FIXED_TO_FLOAT(c1), FIXED_TO_FLOAT(d1));
                 }
                 continue; // faces are ordered correctly, move to next pair
             }
 
             skipT4:
 
+            // ********************* TEST 5 ********************
             t5++;
-            // Test 5 : Test si f1 est du coté opposé de l'observateur par rapport au plan de f2.      
-            // Si oui, f1 est devant f2, pas d'échange
+            // Test si f1 est du coté opposé de l'observateur par rapport au plan de f2.      
+            // Si oui, f1 est derrière f2, pas d'échange
+
             if (ENABLE_DEBUG_SAVE) {
             printf("Test 5 : Testing faces %d and %d\n", f1, f2);
-          }
+            printf("Face coefs: a2=%f, b2=%f, c2=%f, d2=%f\n", FIXED64_TO_FLOAT(a2), FIXED64_TO_FLOAT(b2), FIXED64_TO_FLOAT(c2), FIXED64_TO_FLOAT(d2) );
+            }
+
             obs_side2 = 0; // sign of d1: +1, -1 or 0 (inconclusive)
-            if (d2 > epsilon) obs_side2 = 1; 
-            else if (d2 < -epsilon) obs_side2 = -1;
+            if (d2 > (Fixed64)epsilon) obs_side2 = 1; 
+            else if (d2 < -(Fixed64)epsilon) obs_side2 = -1;
             else goto skipT5; // si l'observateur est sur le plan, on ne peut rien conclure, il faut faire d'autres tests
             all_opposite_side = 1;
+
+            if (ENABLE_DEBUG_SAVE) {
+                printf("FOR lopp start\n");
+                printf("obs_side2 = %d\n", obs_side2);
+                printf("test_values for face %d must be of the opposite sign as obs_side2\n", f1);
+            }
+
+
             for (k=0; k<n1; k++) {
                 int v = faces->vertex_indices_buffer[offset1+k]-1;
-                test_value = FIXED_ADD(FIXED_ADD(FIXED_ADD(FIXED_MUL_64(a2, vtx->xo[v]), FIXED_MUL_64(b2, vtx->yo[v])), FIXED_MUL_64(c2, vtx->zo[v])), d2);
-                if  (test_value > epsilon) side = 1;
-                else if (test_value < -epsilon) side = -1;
+                Fixed64 acc = 0;
+                acc  = (((Fixed64)a2 * (Fixed64)vtx->xo[v]) >> FIXED_SHIFT);
+                acc += (((Fixed64)b2 * (Fixed64)vtx->yo[v]) >> FIXED_SHIFT);
+                acc += (((Fixed64)c2 * (Fixed64)vtx->zo[v]) >> FIXED_SHIFT);
+                acc += (Fixed64)d2;
+                if  (acc > (Fixed64)epsilon) side = 1;
+                else if (acc < -(Fixed64)epsilon) side = -1;
                 if (obs_side2 == side) {
                     // si un vertex est du même coté, on sort de la boucle
                     // et on met le flag à 0 pour indiquer que le test a échoué (et passer au test suivant)
                     all_opposite_side = 0; 
                     break; }
                 }
-                if (all_opposite_side) continue; // faces are ordered correctly, move to next pair
-            
+
+                // test 5 passed
+                if (all_opposite_side) { // faces are ordered correctly, move to next pair
+                    if (ENABLE_DEBUG_SAVE) {
+                    printf("Test 5 passed for Faces %d and %d\n", f1, f2);
+                    }
+                    continue; // faces are ordered correctly, move to next pair
+                }
+                
             skipT5:
 
+            // ********************* TEST 6 *********************
             t6++;
-            // Test 6 : Test si f2 est du  côté opposé de l'observateur par rapport au plan de f1. 
-            // Si oui, f2 est derrière f1, on doit échanger l'ordre
-                
+            // Test si f2 est du côté opposé de l'observateur par rapport au plan de f1. 
+            // Si oui, f2 est derrière f1, on doit échanger l'ordre   
             if (ENABLE_DEBUG_SAVE) {
             printf("Test 6 : Testing faces %d and %d\n", f1, f2);
-                }
+            printf("face coefficients: a1=%f, b1=%f, c1=%f, d1=%f\n", FIXED64_TO_FLOAT(a1), FIXED64_TO_FLOAT(b1), FIXED64_TO_FLOAT(c1), FIXED64_TO_FLOAT(d1));
+            }
+
             obs_side1 = 0; // sign of d1: +1, -1 or 0 (inconclusive)
-            if (d1 > epsilon) obs_side1 = 1; 
-            else if (d1 < -epsilon) obs_side1 = -1;
+            if (d1 > (Fixed64)epsilon) obs_side1 = 1; 
+            else if (d1 < -(Fixed64)epsilon) obs_side1 = -1;
             else goto skipT6; // si l'observateur est sur le plan, on ne peut rien conclure, il faut faire d'autres tests
 
-                all_opposite_side = 1;
-                for (k=0; k<n2; k++) {
-                    int v = faces->vertex_indices_buffer[offset2+k]-1;
-                    int side;
-                    // test using Fixed32 arithmetic
-                    test_value = FIXED_ADD(FIXED_ADD(FIXED_ADD(FIXED_MUL_64(a1, vtx->xo[v]), FIXED_MUL_64(b1, vtx->yo[v])), FIXED_MUL_64(c1, vtx->zo[v])), d1);
-                    if  (test_value > epsilon) side = 1;
-                    else side = -1;
-                    if (obs_side1 == side) { 
-                        all_opposite_side = 0; 
-                        break; 
-                        }
+            all_opposite_side = 1;
+            if (ENABLE_DEBUG_SAVE) {
+                printf("FOR lopp start\n");
+                printf("obs_side1 = %d\n", obs_side1);
+                printf("test_values for face %d must be of the opposite sign as obs_side1\n", f2);
+            }
+            for (k=0; k<n2; k++) {
+                int v = faces->vertex_indices_buffer[offset2+k]-1;
+                int side;
+                Fixed64 acc = 0;
+                acc  = (((Fixed64)a1 * (Fixed64)vtx->xo[v]) >> FIXED_SHIFT);
+                acc += (((Fixed64)b1 * (Fixed64)vtx->yo[v]) >> FIXED_SHIFT);
+                acc += (((Fixed64)c1 * (Fixed64)vtx->zo[v]) >> FIXED_SHIFT);
+                acc += (Fixed64)d1;
+
+                if (ENABLE_DEBUG_SAVE) {
+                    printf("k = %d, vertex index = %d, vtx = (%f, %f, %f)\n", k, v+1, FIXED_TO_FLOAT(vtx->xo[v]), FIXED_TO_FLOAT(vtx->yo[v]), FIXED_TO_FLOAT(vtx->zo[v]));
+                    printf("test_value = %f\n", ((double)acc) / FIXED_SCALE);
                 }
-                if (all_opposite_side == 0) continue;
-                // f2 n'est pas du coté opposé de l'observateur, donc f2 n'est pas derrière f1
+
+                if  (acc > (Fixed64)epsilon) side = 1;
+                else side = -1;
+                if (obs_side1 == side) { 
+                    all_opposite_side = 0;
+                    if (ENABLE_DEBUG_SAVE) {
+                            printf("Test 4 failed for faces %d and %d\n", f1, f2);
+                        }  
+                    break; 
+                    }
+                }
+
+                if (all_opposite_side == 1) { // test 6 passed
+                // f2 est du coté opposé de l'observateur, donc f2 est  derrière f1 ==> échange nécessaire
+                    if (ENABLE_DEBUG_SAVE) {
+                    printf("Test 6 passed for faces %d and %d\n", f1, f2);
+                    } 
+                    goto do_swap;
+                }
+
 
 
             skipT6: ;
-
+            // ********************* TEST 7 *********************
             t7++;
             // Test 7 : Test si f1 est du même côté de l'observateur par rapport au plan de f2. 
             // Si oui, f1 est devant f2, on doit échanger l'ordre
@@ -1058,16 +1114,20 @@ void painter_newell_sancha(Model3D* model, int face_count) {
             printf("Test 7 : Testing faces %d and %d\n", f1, f2);
                 }
             obs_side2 = 0; // sign of d1: +1, -1 or 0 (inconclusive)
-            if (d2 > epsilon) obs_side2 = 1; 
-            else if (d2 < -epsilon) obs_side2 = -1;
+            if (d2 > (Fixed64)epsilon) obs_side2 = 1; 
+            else if (d2 < -(Fixed64)epsilon) obs_side2 = -1;
             else goto skipT7; // si l'observateur est sur le plan, on ne peut rien conclure, il faut faire d'autres tests
             all_same_side = 1;
             for (k=0; k<n1; k++) {
                 int v = faces->vertex_indices_buffer[offset1+k]-1;
                 int side;
-                test_value = FIXED_ADD(FIXED_ADD(FIXED_ADD(FIXED_MUL_64(a2, vtx->xo[v]), FIXED_MUL_64(b2, vtx->yo[v])), FIXED_MUL_64(c2, vtx->zo[v])), d2);
+                Fixed64 acc = 0;
+                acc  = (((Fixed64)a2 * (Fixed64)vtx->xo[v]) >> FIXED_SHIFT);
+                acc += (((Fixed64)b2 * (Fixed64)vtx->yo[v]) >> FIXED_SHIFT);
+                acc += (((Fixed64)c2 * (Fixed64)vtx->zo[v]) >> FIXED_SHIFT);
+                acc += (Fixed64)d2;
                 //test_value = a1*vtx->xo[v] + b1*vtx->yo[v] + c1*vtx->zo[v] + d1;
-                if  (test_value > epsilon) side = 1;
+                if  (acc > (Fixed64)epsilon) side = 1;
                 else side = -1;
                 if (obs_side2 != side) { 
                     all_same_side = 0; 
@@ -1314,20 +1374,20 @@ void painter_newell_sancha_float(Model3D* model, int face_count) {
             int offset2 = faces->vertex_indices_ptr[f2];
             float a1, b1, c1, d1;
             if (!f_plane_conv_buf[f1]) {
-                a1 = FIXED_TO_FLOAT(faces->plane_a[f1]);
-                b1 = FIXED_TO_FLOAT(faces->plane_b[f1]);
-                c1 = FIXED_TO_FLOAT(faces->plane_c[f1]);
-                d1 = FIXED_TO_FLOAT(faces->plane_d[f1]);
+                a1 = (float)FIXED64_TO_FLOAT(faces->plane_a[f1]);
+                b1 = (float)FIXED64_TO_FLOAT(faces->plane_b[f1]);
+                c1 = (float)FIXED64_TO_FLOAT(faces->plane_c[f1]);
+                d1 = (float)FIXED64_TO_FLOAT(faces->plane_d[f1]);
                 f_plane_a[f1] = a1; f_plane_b[f1] = b1; f_plane_c[f1] = c1; f_plane_d[f1] = d1;
                 f_plane_conv_buf[f1] = 1;
             } else { a1 = f_plane_a[f1]; b1 = f_plane_b[f1]; c1 = f_plane_c[f1]; d1 = f_plane_d[f1]; }
 
             float a2, b2, c2, d2;
             if (!f_plane_conv_buf[f2]) {
-                a2 = FIXED_TO_FLOAT(faces->plane_a[f2]);
-                b2 = FIXED_TO_FLOAT(faces->plane_b[f2]);
-                c2 = FIXED_TO_FLOAT(faces->plane_c[f2]);
-                d2 = FIXED_TO_FLOAT(faces->plane_d[f2]);
+                a2 = (float)FIXED64_TO_FLOAT(faces->plane_a[f2]);
+                b2 = (float)FIXED64_TO_FLOAT(faces->plane_b[f2]);
+                c2 = (float)FIXED64_TO_FLOAT(faces->plane_c[f2]);
+                d2 = (float)FIXED64_TO_FLOAT(faces->plane_d[f2]);
                 f_plane_a[f2] = a2; f_plane_b[f2] = b2; f_plane_c[f2] = c2; f_plane_d[f2] = d2;
                 f_plane_conv_buf[f2] = 1;
             } else { a2 = f_plane_a[f2]; b2 = f_plane_b[f2]; c2 = f_plane_c[f2]; d2 = f_plane_d[f2]; }
@@ -1381,13 +1441,9 @@ void painter_newell_sancha_float(Model3D* model, int face_count) {
                     break; 
                     }
             }
-            if (all_opposite_side == 0) continue;
-            // f2 n'est pas du coté opposé de l'observateur, donc f2 n'est pas derrière f1
-            else {
-            // Si on arrive ici, f2 est du même côté que l'observateur, donc f2 est devant f1
-            // on peut donc inverser l'ordre des faces
-                goto do_swap;
-            }
+            if (all_opposite_side == 1) goto do_swap;
+            // f2 est du coté opposé de l'observateur, donc f2 est derrière f1 ==> échange nécessaire
+
             skipT6_float: ;
 
             // Test 7 : Test si f1 est du même côté de l'observateur par rapport au plan de f2. 
@@ -1640,10 +1696,10 @@ Model3D* createModel3D(void) {
     }
 
     // Allocate plane coefficient arrays (normalized normals + d term)
-    model->faces.plane_a = (Fixed32*)malloc(nf * sizeof(Fixed32));
-    model->faces.plane_b = (Fixed32*)malloc(nf * sizeof(Fixed32));
-    model->faces.plane_c = (Fixed32*)malloc(nf * sizeof(Fixed32));
-    model->faces.plane_d = (Fixed32*)malloc(nf * sizeof(Fixed32));
+    model->faces.plane_a = (Fixed64*)malloc(nf * sizeof(Fixed64));
+    model->faces.plane_b = (Fixed64*)malloc(nf * sizeof(Fixed64));
+    model->faces.plane_c = (Fixed64*)malloc(nf * sizeof(Fixed64));
+    model->faces.plane_d = (Fixed64*)malloc(nf * sizeof(Fixed64));
     if (!model->faces.plane_a || !model->faces.plane_b || !model->faces.plane_c || !model->faces.plane_d) {
         printf("Error: Unable to allocate memory for face plane arrays\n");
         keypress();
@@ -2530,12 +2586,12 @@ void calculateFaceDepths(Model3D* model, Face3D* faces, int face_count) {
             }
         }
         // Compute plane coefficients (a,b,c,d) using only the first 3 vertices (observer space)
-        // Formules (Fixed32 arithmetic, NO normalization):
+        // Formules (Fixed16.16 arithmetic implemented in Fixed64 intermediates):
         // a := y1 * (z2 - z3) + y2 * (z3 - z1) + y3 * (z1 - z2);
         // b := -x1 * (z2 - z3) + x2 * (z1 - z3) - x3 * (z1 - z2);
         // c := x1 * (y2 - y3) - x2 * (y1 - y3) + x3 * (y1 - y2);
         // d := -x1 * (y2 * z3 - y3 * z2) + x2 * (y1 * z3 - y3 * z1) - x3 * (y1 * z2 - y2 * z1);
-        Fixed32 a = 0, b = 0, c = 0, d = 0;
+        Fixed64 a64 = 0, b64 = 0, c64 = 0, d64 = 0;
         if (!display_flag || n < 3) {
             // face is behind camera or degenerate: zero coefficients
             face_arrays->plane_a[i] = 0;
@@ -2556,25 +2612,38 @@ void calculateFaceDepths(Model3D* model, Face3D* faces, int face_count) {
                 Fixed32 x2 = vtx->xo[idx1], y2 = vtx->yo[idx1], z2 = vtx->zo[idx1];
                 Fixed32 x3 = vtx->xo[idx2], y3 = vtx->yo[idx2], z3 = vtx->zo[idx2];
 
-                // a = y1*(z2-z3) + y2*(z3-z1) + y3*(z1-z2)
-                a = FIXED_ADD(FIXED_ADD(FIXED_MUL_64(y1, FIXED_SUB(z2, z3)), FIXED_MUL_64(y2, FIXED_SUB(z3, z1))), FIXED_MUL_64(y3, FIXED_SUB(z1, z2)));
+                // Compute a = y1*(z2-z3) + y2*(z3-z1) + y3*(z1-z2) in Fixed64
+                Fixed64 term_a1 = (((Fixed64)y1 * (Fixed64)FIXED_SUB(z2, z3)) >> FIXED_SHIFT);
+                Fixed64 term_a2 = (((Fixed64)y2 * (Fixed64)FIXED_SUB(z3, z1)) >> FIXED_SHIFT);
+                Fixed64 term_a3 = (((Fixed64)y3 * (Fixed64)FIXED_SUB(z1, z2)) >> FIXED_SHIFT);
+                a64 = FIXED_ADD(FIXED_ADD(term_a1, term_a2), term_a3);
 
                 // b = -x1*(z2-z3) + x2*(z1-z3) - x3*(z1-z2)
-                b = FIXED_SUB(FIXED_ADD(FIXED_NEG(FIXED_MUL_64(x1, FIXED_SUB(z2, z3))), FIXED_MUL_64(x2, FIXED_SUB(z1, z3))), FIXED_MUL_64(x3, FIXED_SUB(z1, z2)));
+                Fixed64 term_b1 = (((Fixed64)x1 * (Fixed64)FIXED_SUB(z2, z3)) >> FIXED_SHIFT);
+                Fixed64 term_b2 = (((Fixed64)x2 * (Fixed64)FIXED_SUB(z1, z3)) >> FIXED_SHIFT);
+                Fixed64 term_b3 = (((Fixed64)x3 * (Fixed64)FIXED_SUB(z1, z2)) >> FIXED_SHIFT);
+                // b = -term_b1 + term_b2 - term_b3
+                b64 = FIXED_SUB(FIXED_ADD(FIXED_NEG(term_b1), term_b2), term_b3);
 
                 // c = x1*(y2-y3) - x2*(y1-y3) + x3*(y1-y2)
-                c = FIXED_ADD(FIXED_SUB(FIXED_MUL_64(x1, FIXED_SUB(y2, y3)), FIXED_MUL_64(x2, FIXED_SUB(y1, y3))), FIXED_MUL_64(x3, FIXED_SUB(y1, y2)));
+                Fixed64 term_c1 = (((Fixed64)x1 * (Fixed64)FIXED_SUB(y2, y3)) >> FIXED_SHIFT);
+                Fixed64 term_c2 = (((Fixed64)x2 * (Fixed64)FIXED_SUB(y1, y3)) >> FIXED_SHIFT);
+                Fixed64 term_c3 = (((Fixed64)x3 * (Fixed64)FIXED_SUB(y1, y2)) >> FIXED_SHIFT);
+                c64 = FIXED_ADD(FIXED_SUB(term_c1, term_c2), term_c3);
 
                 // d = -x1*(y2*z3 - y3*z2) + x2*(y1*z3 - y3*z1) - x3*(y1*z2 - y2*z1)
-                Fixed32 t1 = FIXED_SUB(FIXED_MUL_64(y2, z3), FIXED_MUL_64(y3, z2));
-                Fixed32 t2 = FIXED_SUB(FIXED_MUL_64(y1, z3), FIXED_MUL_64(y3, z1));
-                Fixed32 t3 = FIXED_SUB(FIXED_MUL_64(y1, z2), FIXED_MUL_64(y2, z1));
-                d = FIXED_ADD(FIXED_ADD(FIXED_NEG(FIXED_MUL_64(x1, t1)), FIXED_MUL_64(x2, t2)), FIXED_NEG(FIXED_MUL_64(x3, t3)));
+                Fixed64 t1 = ((((Fixed64)y2 * (Fixed64)z3) - ((Fixed64)y3 * (Fixed64)z2)) >> FIXED_SHIFT);
+                Fixed64 t2 = ((((Fixed64)y1 * (Fixed64)z3) - ((Fixed64)y3 * (Fixed64)z1)) >> FIXED_SHIFT);
+                Fixed64 t3 = ((((Fixed64)y1 * (Fixed64)z2) - ((Fixed64)y2 * (Fixed64)z1)) >> FIXED_SHIFT);
+                Fixed64 term_d1 = (((Fixed64)x1 * t1) >> FIXED_SHIFT);
+                Fixed64 term_d2 = (((Fixed64)x2 * t2) >> FIXED_SHIFT);
+                Fixed64 term_d3 = (((Fixed64)x3 * t3) >> FIXED_SHIFT);
+                d64 = FIXED_SUB(FIXED_ADD(FIXED_NEG(term_d1), term_d2), term_d3);
 
-                face_arrays->plane_a[i] = a;
-                face_arrays->plane_b[i] = b;
-                face_arrays->plane_c[i] = c;
-                face_arrays->plane_d[i] = d;
+                face_arrays->plane_a[i] = a64;
+                face_arrays->plane_b[i] = b64;
+                face_arrays->plane_c[i] = c64;
+                face_arrays->plane_d[i] = d64;
             }
         }
 
@@ -2663,10 +2732,10 @@ void dumpFaceEquationsCSV(Model3D* model, const char* csv_filename, int alt_form
     fprintf(f, "\n");
 
     for (int i = 0; i < face_count; ++i) {
-        float a = FIXED_TO_FLOAT(faces->plane_a[i]);
-        float b = FIXED_TO_FLOAT(faces->plane_b[i]);
-        float c = FIXED_TO_FLOAT(faces->plane_c[i]);
-        float d = FIXED_TO_FLOAT(faces->plane_d[i]);
+        float a = (float)FIXED64_TO_FLOAT(faces->plane_a[i]);
+        float b = (float)FIXED64_TO_FLOAT(faces->plane_b[i]);
+        float c = (float)FIXED64_TO_FLOAT(faces->plane_c[i]);
+        float d = (float)FIXED64_TO_FLOAT(faces->plane_d[i]);
         float zmin = FIXED_TO_FLOAT(faces->z_min[i]);
         float zmean = FIXED_TO_FLOAT(faces->z_mean[i]);
         float zmax = FIXED_TO_FLOAT(faces->z_max[i]);
@@ -3271,7 +3340,7 @@ void DoText() {
                 printf("    Screen Rotation Angle: %d deg\n", params.angle_w);
                 printf("    Projection scale: %.2f\n", FIXED_TO_FLOAT(s_global_proj_scale_fixed));
                 if (painter_mode == PAINTER_MODE_FAST) printf("    Painter mode: FAST (simple face sorting only)\n");
-                else if (painter_mode == PAINTER_MODE_FIXED) printf("    Painter mode: NORMAL (Fixed32)\n");
+                else if (painter_mode == PAINTER_MODE_FIXED) printf("    Painter mode: NORMAL (Fixed32/64)\n");
                 else printf("    Painter mode: FLOAT (float-based)\n\n");
                 printf ("Processing time: %d ticks (1/60 sec.)\n", last_process_time_end - last_process_time_start);
                 printf("===================================\n");
