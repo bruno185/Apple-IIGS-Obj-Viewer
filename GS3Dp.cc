@@ -351,7 +351,7 @@ static inline int normalize_deg(int deg) {
 // ============================================================================
 
 // Performance and debug configuration
-#define ENABLE_DEBUG_SAVE 1     // 1 = Enable debug save (SLOW!), 0 = Disable
+#define ENABLE_DEBUG_SAVE 0     // 1 = Enable debug save (SLOW!), 0 = Disable
 //#define PERFORMANCE_MODE 0      // 1 = Optimized performance mode, 0 = Debug mode
 // OPTIMIZATION: Performance mode - disable printf
 #define PERFORMANCE_MODE 1      // 1 = no printf, 0 = normal printf
@@ -930,13 +930,11 @@ void painter_newell_sancha(Model3D* model, int face_count) {
             Fixed32 test_value;
 
             t4++;
-            // XXXXXXXXXXXXXXXXXXXXXXXXXXX
             // Test 4 : Test si f2 est du même côté que l'observatur par rapport au plan de f1. 
             // Si oui, f2 est bien devant f1, pas d'échange.
             if (ENABLE_DEBUG_SAVE) {
             printf("Test 4 : Testing faces %d and %d\n", f1, f2);
             }
-            //keypress();
             obs_side1 = 0; // sign of d1: +1, -1 or 0 (inconclusive)
             if (d1 > epsilon) obs_side1 = 1; 
             else if (d1 < -epsilon) obs_side1 = -1;
@@ -1023,11 +1021,6 @@ void painter_newell_sancha(Model3D* model, int face_count) {
                 if (all_opposite_side == 0) continue;
                 // f2 n'est pas du coté opposé de l'observateur, donc f2 n'est pas derrière f1
 
-                // Si on arrive ici, f2 est du même côté que l'observateur, donc f2 est devant f1
-                // on peut donc inverser l'ordre des faces
-                else {
-                    goto do_swap;
-                }
 
             skipT6: ;
 
@@ -1056,9 +1049,9 @@ void painter_newell_sancha(Model3D* model, int face_count) {
                     }
             }
                 if (all_same_side == 0) goto skipT7;
+                else {
                 // f1 n'est pas du même côté de l'observateur, donc f1 n'est pas devant f2
                 // on ne doit pas échanger l'ordre des faces
-                else {
                     goto do_swap;
                 }
 
@@ -1088,6 +1081,7 @@ void painter_newell_sancha(Model3D* model, int face_count) {
         skipT7: ;
         if (ENABLE_DEBUG_SAVE){
                 printf("NON CONCLUTANT POUR LES FACES %d ET %d\n", f1, f2);
+                keypress();
         }
         // on les met dans la liste des paires ordonnées pour ne plus les tester
         if (ordered_pairs != NULL && ordered_pairs_count < ordered_pairs_capacity) {
@@ -2057,7 +2051,7 @@ void processModelFast(Model3D* model, ObserverParams* params, const char* filena
         model->faces.sorted_face_indices[i] = i;
     }
 
-    // painter_newell_sancha (remplace sortFacesByDepth)
+    // painter_newell_sancha 
     t_start = GetTick();
     if (painter_mode == PAINTER_MODE_FAST) {
         painter_newell_sancha_fast(model, model->faces.face_count);
