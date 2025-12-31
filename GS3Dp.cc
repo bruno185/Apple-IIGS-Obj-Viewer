@@ -93,9 +93,6 @@ static float *f_plane_a_buf = NULL, *f_plane_b_buf = NULL, *f_plane_c_buf = NULL
 static int *f_plane_conv_buf = NULL; /* 0 = not converted from fixed, 1 = converted */
 static int *order_buf = NULL; static int order_cap = 0;
 
-// Hash table for ordered pairs (stores pair key = (f1<<16)|f2). Uses 0xFFFFFFFF as empty sentinel
-static uint32_t *ordered_pairs_hash = NULL; static int ordered_pairs_hash_cap = 0; static const uint32_t ordered_pairs_sentinel = 0xFFFFFFFFu;
-static int ordered_pairs_seen_count = 0;
 
 // Utility: next power of two
 static int next_pow2_int(int x) { int p = 1; while (p < x) p <<= 1; return p; }
@@ -139,41 +136,6 @@ static void ensure_order_capacity(int face_count) {
     int newcap = (face_count + 7) & ~7;
     order_buf = (int*)realloc(order_buf, sizeof(int)*newcap);
     order_cap = newcap;
-}
-
-static void ensure_ordered_pairs_hash(int face_count) {
-    int min_size = face_count * 4;
-    int cap = next_pow2_int(min_size);
-    if (ordered_pairs_hash_cap >= cap) return;
-    ordered_pairs_hash = (uint32_t*)realloc(ordered_pairs_hash, sizeof(uint32_t) * cap);
-    // initialize to sentinel
-    for (int i = 0; i < cap; ++i) ordered_pairs_hash[i] = ordered_pairs_sentinel;
-    ordered_pairs_hash_cap = cap;
-    ordered_pairs_seen_count = 0;
-}
-
-static int pair_hash_contains(uint32_t key) {
-    if (!ordered_pairs_hash) return 0;
-    uint32_t mask = ordered_pairs_hash_cap - 1;
-    uint32_t h = (key * 2654435761u) & mask;
-    while (1) {
-        uint32_t v = ordered_pairs_hash[h];
-        if (v == ordered_pairs_sentinel) return 0;
-        if (v == key) return 1;
-        h = (h + 1) & mask;
-    }
-}
-
-static void pair_hash_insert(uint32_t key) {
-    if (!ordered_pairs_hash) return;
-    uint32_t mask = ordered_pairs_hash_cap - 1;
-    uint32_t h = (key * 2654435761u) & mask;
-    while (1) {
-        uint32_t v = ordered_pairs_hash[h];
-        if (v == ordered_pairs_sentinel) { ordered_pairs_hash[h] = key; ordered_pairs_seen_count++; return; }
-        if (v == key) return; // already present
-        h = (h + 1) & mask;
-    }
 }
 
 // Comparator for float z_mean ordering (used by painter_newell_sancha_float)
@@ -1186,7 +1148,16 @@ void painter_newell_sancha_float(Model3D* model, int face_count) {
     ensure_vertex_capacity(vcount);
     ensure_face_capacity(face_count);
     ensure_order_capacity(face_count);
-    ensure_ordered_pairs_hash(face_count);
+
+
+    typedef struct { int face1; int face2; } OrderedPair;
+    int ordered_pairs_capacity = face_count * 4;
+    OrderedPair* ordered_pairs = NULL;
+    if (ordered_pairs_capacity > 0) {
+        ordered_pairs = (OrderedPair*)malloc(ordered_pairs_capacity * sizeof(OrderedPair));
+        if (!ordered_pairs) ordered_pairs_capacity = 0;
+    }
+    int ordered_pairs_count = 0;
 
     for (int i = 0; i < vcount; ++i) {
         float_xo[i] = FIXED_TO_FLOAT(vtx->xo[i]);
@@ -1311,26 +1282,31 @@ void painter_newell_sancha_float(Model3D* model, int face_count) {
         }
     }
 
-    // use hash table for ordered pairs (O(1) checks)
-    // ensure_ordered_pairs_hash(face_count) already called above
-    ordered_pairs_seen_count = 0; // reset per invocation
-
     int swapped_local = 0;
     do {
         swapped_local = 0;
         for (int i = 0; i < face_count - 1; ++i) {
             int f1 = order[i], f2 = order[i+1];
-            uint32_t pair_key = (((uint32_t)f1) << 16) | (uint32_t)f2;
-            if (pair_hash_contains(pair_key)) continue;
+            /* linear check against ordered_pairs array */
+            int already_ordered = 0;
+            int p;
+            for (p = 0; p < ordered_pairs_count; ++p) {
+                if (ordered_pairs[p].face1 == f1 && ordered_pairs[p].face2 == f2) { already_ordered = 1; break; }
+            }
+            if (already_ordered) continue; 
 
             // Test 1 : Depth overlap (float)
             if (f_z_max[f2] <= f_z_min[f1]) continue;
             if (f_z_max[f1] <= f_z_min[f2]) {
                 int tmp = order[i]; order[i] = order[i+1]; order[i+1] = tmp;
                 swapped_local = 1;
-                // record pair in hash
-                pair_hash_insert(((uint32_t)f2<<16) | (uint32_t)f1);
-                continue;
+                // record pair in ordered_pairs array (f2 before f1)
+                if (ordered_pairs != NULL && ordered_pairs_count < ordered_pairs_capacity) {
+                    ordered_pairs[ordered_pairs_count].face1 = f2;
+                    ordered_pairs[ordered_pairs_count].face2 = f1;
+                    ordered_pairs_count++;
+                }
+                continue; 
             }
 
             // Test 2 : X overlap
@@ -1453,8 +1429,12 @@ void painter_newell_sancha_float(Model3D* model, int face_count) {
             {
                 int tmp = order[i]; order[i] = order[i+1]; order[i+1] = tmp;
                 swapped_local = 1;
-                // record pair in hash (f2 before f1)
-                pair_hash_insert(((uint32_t)f2<<16) | (uint32_t)f1);
+                // record pair in ordered_pairs array (f2 before f1)
+                if (ordered_pairs != NULL && ordered_pairs_count < ordered_pairs_capacity) {
+                    ordered_pairs[ordered_pairs_count].face1 = f2;
+                    ordered_pairs[ordered_pairs_count].face2 = f1;
+                    ordered_pairs_count++;
+                }
             }
 
             skipT7_float: ;
@@ -1464,6 +1444,8 @@ void painter_newell_sancha_float(Model3D* model, int face_count) {
 
     // write back order to faces->sorted_face_indices
     for (int i = 0; i < face_count; ++i) faces->sorted_face_indices[i] = order[i];
+
+    if (ordered_pairs) free(ordered_pairs);
 
     // Note: buffers are reused across invocations to avoid malloc/free overhead
     // (they are intentionally not freed here)
