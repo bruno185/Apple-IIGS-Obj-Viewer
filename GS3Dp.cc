@@ -314,7 +314,7 @@ static inline int normalize_deg(int deg) {
 // ============================================================================
 
 // Performance and debug configuration
-#define ENABLE_DEBUG_SAVE 0     // 1 = Enable debug save (SLOW!), 0 = Disable
+#define ENABLE_DEBUG_SAVE 0    // 1 = Enable debug save (SLOW!), 0 = Disable
 //#define PERFORMANCE_MODE 0      // 1 = Optimized performance mode, 0 = Debug mode
 // OPTIMIZATION: Performance mode - disable printf
 #define PERFORMANCE_MODE 1      // 1 = no printf, 0 = normal printf
@@ -859,7 +859,7 @@ void painter_newell_sancha(Model3D* model, int face_count) {
             Fixed64 b2 = faces->plane_b[f2];
             Fixed64 c2 = faces->plane_c[f2];
             Fixed64 d2 = faces->plane_d[f2];
-            Fixed32 epsilon = FLOAT_TO_FIXED(0.000001f);
+            Fixed32 epsilon = FLOAT_TO_FIXED(0.001f);
 
             int obs_side1 = 0; // côté de l'observateur par rapport au plan de f1 : +1, -1 ou 0 (inconclusive)
             int obs_side2 = 0; // côté de l'observateur par rapport au plan de f2 : +1, -1 ou 0 (inconclusive)
@@ -873,10 +873,12 @@ void painter_newell_sancha(Model3D* model, int face_count) {
             t4++;
             // Test si f2 est du même côté que l'observatur par rapport au plan de f1. 
             // Si oui, f2 est bien devant f1, pas d'échange.
+
             if (ENABLE_DEBUG_SAVE) {
             printf("\n**** Test 4 : Testing faces %d and %d\n", f1, f2);
             printf("Face coefs: a1=%f, b1=%f, c1=%f, d1=%f\n", FIXED64_TO_FLOAT(a1), FIXED64_TO_FLOAT(b1), FIXED64_TO_FLOAT(c1), FIXED64_TO_FLOAT(d1));
             }
+
             obs_side1 = 0; // sign of d1: +1, -1 or 0 (inconclusive)
             if (d1 > (Fixed64)epsilon) obs_side1 = 1; 
             else if (d1 < -(Fixed64)epsilon) obs_side1 = -1;
@@ -902,13 +904,14 @@ void painter_newell_sancha(Model3D* model, int face_count) {
                     }
                     if  (acc > (Fixed64)epsilon) side = 1;
                     else if (acc < -(Fixed64)epsilon) side = -1;
+                    else continue; // si le vertex est sur le plan, on l'ignore et on passe au vertex suivant
                     if (obs_side1 != side) { 
                         // si un vertex est de l'autre coté, on sort de la boucle
                         // et on met le flag à 0 pour indiquer que le test a échoué (et passer au test suivant)
                         all_same_side = 0; 
                         if (ENABLE_DEBUG_SAVE) {
                             printf("Test 4 failed for faces %d and %d\n", f1, f2);
-                            
+                            keypress();
                         }  
                         break; 
                         }
@@ -921,6 +924,7 @@ void painter_newell_sancha(Model3D* model, int face_count) {
             if (all_same_side) { 
                 if (ENABLE_DEBUG_SAVE) {
                 printf("Test 4 passed for Faces %d and %d\n", f1, f2);
+                keypress();
                 }
                 continue; // faces are ordered correctly, move to next pair
             }
@@ -949,7 +953,6 @@ void painter_newell_sancha(Model3D* model, int face_count) {
                 printf("test_values for face %d must be of the opposite sign as obs_side2\n", f1);
             }
 
-
             for (k=0; k<n1; k++) {
                 int v = faces->vertex_indices_buffer[offset1+k]-1;
                 Fixed64 acc = 0;
@@ -959,10 +962,15 @@ void painter_newell_sancha(Model3D* model, int face_count) {
                 acc += (Fixed64)d2;
                 if  (acc > (Fixed64)epsilon) side = 1;
                 else if (acc < -(Fixed64)epsilon) side = -1;
+                else continue; // si le vertex est sur le plan, on l'ignore et on passe au vertex suivant
                 if (obs_side2 == side) {
                     // si un vertex est du même coté, on sort de la boucle
                     // et on met le flag à 0 pour indiquer que le test a échoué (et passer au test suivant)
                     all_opposite_side = 0; 
+                    if (ENABLE_DEBUG_SAVE) {
+                            printf("Test 5 failed for faces %d and %d\n", f1, f2);
+                            keypress();
+                        }  
                     break; }
                 }
 
@@ -970,6 +978,7 @@ void painter_newell_sancha(Model3D* model, int face_count) {
                 if (all_opposite_side) { // faces are ordered correctly, move to next pair
                     if (ENABLE_DEBUG_SAVE) {
                     printf("Test 5 passed for Faces %d and %d\n", f1, f2);
+                    keypress();
                     }
                     continue; // faces are ordered correctly, move to next pair
                 }
@@ -982,7 +991,7 @@ void painter_newell_sancha(Model3D* model, int face_count) {
             // Si oui, f2 est derrière f1, on doit échanger l'ordre   
             if (ENABLE_DEBUG_SAVE) {
             printf("Test 6 : Testing faces %d and %d\n", f1, f2);
-            printf("face coefficients: a1=%f, b1=%f, c1=%f, d1=%f\n", FIXED64_TO_FLOAT(a1), FIXED64_TO_FLOAT(b1), FIXED64_TO_FLOAT(c1), FIXED64_TO_FLOAT(d1));
+            printf("Face coefs: a1=%f, b1=%f, c1=%f, d1=%f\n", FIXED64_TO_FLOAT(a1), FIXED64_TO_FLOAT(b1), FIXED64_TO_FLOAT(c1), FIXED64_TO_FLOAT(d1));
             }
 
             obs_side1 = 0; // sign of d1: +1, -1 or 0 (inconclusive)
@@ -1011,11 +1020,13 @@ void painter_newell_sancha(Model3D* model, int face_count) {
                 }
 
                 if  (acc > (Fixed64)epsilon) side = 1;
-                else side = -1;
+                else if  (acc < -(Fixed64)epsilon) side = -1;
+                else continue; // si le vertex est sur le plan, on l'ignore et on passe au vertex suivant
                 if (obs_side1 == side) { 
                     all_opposite_side = 0;
                     if (ENABLE_DEBUG_SAVE) {
-                            printf("Test 4 failed for faces %d and %d\n", f1, f2);
+                            printf("Test 6 failed for faces %d and %d\n", f1, f2);
+                            keypress();
                         }  
                     break; 
                     }
@@ -1025,6 +1036,7 @@ void painter_newell_sancha(Model3D* model, int face_count) {
                 // f2 est du coté opposé de l'observateur, donc f2 est  derrière f1 ==> échange nécessaire
                     if (ENABLE_DEBUG_SAVE) {
                     printf("Test 6 passed for faces %d and %d\n", f1, f2);
+                    keypress();
                     } 
                     goto do_swap;
                 }
@@ -1040,12 +1052,20 @@ void painter_newell_sancha(Model3D* model, int face_count) {
 
             if (ENABLE_DEBUG_SAVE) {
             printf("Test 7 : Testing faces %d and %d\n", f1, f2);
-                }
+            printf("Face coefs: a1=%f, b1=%f, c1=%f, d1=%f\n", FIXED64_TO_FLOAT(a2), FIXED64_TO_FLOAT(b2), FIXED64_TO_FLOAT(c2), FIXED64_TO_FLOAT(d2));
+            }
             obs_side2 = 0; // sign of d1: +1, -1 or 0 (inconclusive)
             if (d2 > (Fixed64)epsilon) obs_side2 = 1; 
             else if (d2 < -(Fixed64)epsilon) obs_side2 = -1;
             else goto skipT7; // si l'observateur est sur le plan, on ne peut rien conclure, il faut faire d'autres tests
+
             all_same_side = 1;
+            if (ENABLE_DEBUG_SAVE) {
+                printf("FOR loop start\n");
+                printf("obs_side1 = %d\n", obs_side1);
+                printf("test_values for face %d must be of the opposite sign as obs_side1\n", f2);
+            }
+
             for (k=0; k<n1; k++) {
                 int v = faces->vertex_indices_buffer[offset1+k]-1;
                 int side;
@@ -1054,19 +1074,35 @@ void painter_newell_sancha(Model3D* model, int face_count) {
                 acc += (((Fixed64)b2 * (Fixed64)vtx->yo[v]) >> FIXED_SHIFT);
                 acc += (((Fixed64)c2 * (Fixed64)vtx->zo[v]) >> FIXED_SHIFT);
                 acc += (Fixed64)d2;
-                //test_value = a1*vtx->xo[v] + b1*vtx->yo[v] + c1*vtx->zo[v] + d1;
+                
+                if (ENABLE_DEBUG_SAVE) {
+                    printf("k = %d, vertex index = %d, vtx = (%f, %f, %f)\n", k, v+1, FIXED_TO_FLOAT(vtx->xo[v]), FIXED_TO_FLOAT(vtx->yo[v]), FIXED_TO_FLOAT(vtx->zo[v]));
+                    printf("test_value = %f\n", ((double)acc) / FIXED_SCALE);
+                }
+
                 if  (acc > (Fixed64)epsilon) side = 1;
-                else side = -1;
+                else if  (acc < -(Fixed64)epsilon) side = -1;
+                else continue; // si le vertex est sur le plan, on l'ignore et on passe au vertex suivant
                 if (obs_side2 != side) { 
                     all_same_side = 0; 
+                    if (ENABLE_DEBUG_SAVE) {
+                            printf("Test 7 failed for faces %d and %d\n", f1, f2);
+                            keypress();
+                        } 
                     break; 
                     }
             }
                 // f1 n'est pas du même côté de l'observateur, donc f1 n'est pas devant f2
                 // on ne doit pas échanger l'ordre des faces
-                if (all_same_side == 0) goto skipT7;
+                // aucun test n'a permis de conclure : on signale non concluant
+                if (all_same_side == 0)  goto skipT7;
 
+                // f1 est devant f2, on doit échanger l'ordre
                 else {
+                    if (ENABLE_DEBUG_SAVE) {
+                    printf("Test 7 passed for faces %d and %d\n", f1, f2);
+                    keypress();
+                    } 
                     goto do_swap;
                 }
 
