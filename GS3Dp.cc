@@ -926,6 +926,12 @@ void painter_newell_sancha(Model3D* model, int face_count) {
                 printf("Test 4 passed for Faces %d and %d\n", f1, f2);
                 keypress();
                 }
+                // XXX
+                if (ordered_pairs != NULL && ordered_pairs_count < ordered_pairs_capacity) {
+                    ordered_pairs[ordered_pairs_count].face1 = f2;
+                    ordered_pairs[ordered_pairs_count].face2 = f1;
+                    ordered_pairs_count++;
+                }
                 continue; // faces are ordered correctly, move to next pair
             }
 
@@ -979,6 +985,12 @@ void painter_newell_sancha(Model3D* model, int face_count) {
                     if (ENABLE_DEBUG_SAVE) {
                     printf("Test 5 passed for Faces %d and %d\n", f1, f2);
                     keypress();
+                    }
+                    // XXX
+                    if (ordered_pairs != NULL && ordered_pairs_count < ordered_pairs_capacity) {
+                    ordered_pairs[ordered_pairs_count].face1 = f2;
+                    ordered_pairs[ordered_pairs_count].face2 = f1;
+                    ordered_pairs_count++;
                     }
                     continue; // faces are ordered correctly, move to next pair
                 }
@@ -1038,6 +1050,12 @@ void painter_newell_sancha(Model3D* model, int face_count) {
                     printf("Test 6 passed for faces %d and %d\n", f1, f2);
                     keypress();
                     } 
+                    // XXX
+                    if (ordered_pairs != NULL && ordered_pairs_count < ordered_pairs_capacity) {
+                    ordered_pairs[ordered_pairs_count].face1 = f2;
+                    ordered_pairs[ordered_pairs_count].face2 = f1;
+                    ordered_pairs_count++;
+                    }
                     goto do_swap;
                 }
 
@@ -1103,6 +1121,12 @@ void painter_newell_sancha(Model3D* model, int face_count) {
                     printf("Test 7 passed for faces %d and %d\n", f1, f2);
                     keypress();
                     } 
+                    // XXX
+                    if (ordered_pairs != NULL && ordered_pairs_count < ordered_pairs_capacity) {
+                    ordered_pairs[ordered_pairs_count].face1 = f2;
+                    ordered_pairs[ordered_pairs_count].face2 = f1;
+                    ordered_pairs_count++;
+                    }
                     goto do_swap;
                 }
 
@@ -2089,9 +2113,7 @@ void processModelFast(Model3D* model, ObserverParams* params, const char* filena
             y2d_temp = FIXED_SUB(centre_y_f, FIXED_MUL_64(yo, inv_zo));
             x2d_arr[i] = FIXED_ROUND_TO_INT(FIXED_ADD(FIXED_SUB(FIXED_MUL_64(cos_w, FIXED_SUB(x2d_temp, centre_x_f)), FIXED_MUL_64(sin_w, FIXED_SUB(centre_y_f, y2d_temp))), centre_x_f));
             y2d_arr[i] = FIXED_ROUND_TO_INT(FIXED_SUB(centre_y_f, FIXED_ADD(FIXED_MUL_64(sin_w, FIXED_SUB(x2d_temp, centre_x_f)), FIXED_MUL_64(cos_w, FIXED_SUB(centre_y_f, y2d_temp)))));
-                // XXX
-        //     x2d_arr[i] = (x2d_arr[i]- 160)*4 + 160; // stretch to full resolution
-        //     y2d_arr[i] = (y2d_arr[i]- 100)*4 + 100;
+
         } else {
             zo_arr[i] = zo;
             xo_arr[i] = 0;
