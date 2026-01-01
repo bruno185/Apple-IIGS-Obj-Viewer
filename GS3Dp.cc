@@ -926,12 +926,7 @@ void painter_newell_sancha(Model3D* model, int face_count) {
                 printf("Test 4 passed for Faces %d and %d\n", f1, f2);
                 keypress();
                 }
-                // XXX
-                if (ordered_pairs != NULL && ordered_pairs_count < ordered_pairs_capacity) {
-                    ordered_pairs[ordered_pairs_count].face1 = f2;
-                    ordered_pairs[ordered_pairs_count].face2 = f1;
-                    ordered_pairs_count++;
-                }
+
                 continue; // faces are ordered correctly, move to next pair
             }
 
@@ -986,12 +981,7 @@ void painter_newell_sancha(Model3D* model, int face_count) {
                     printf("Test 5 passed for Faces %d and %d\n", f1, f2);
                     keypress();
                     }
-                    // XXX
-                    if (ordered_pairs != NULL && ordered_pairs_count < ordered_pairs_capacity) {
-                    ordered_pairs[ordered_pairs_count].face1 = f2;
-                    ordered_pairs[ordered_pairs_count].face2 = f1;
-                    ordered_pairs_count++;
-                    }
+
                     continue; // faces are ordered correctly, move to next pair
                 }
                 
@@ -1050,12 +1040,7 @@ void painter_newell_sancha(Model3D* model, int face_count) {
                     printf("Test 6 passed for faces %d and %d\n", f1, f2);
                     keypress();
                     } 
-                    // XXX
-                    if (ordered_pairs != NULL && ordered_pairs_count < ordered_pairs_capacity) {
-                    ordered_pairs[ordered_pairs_count].face1 = f2;
-                    ordered_pairs[ordered_pairs_count].face2 = f1;
-                    ordered_pairs_count++;
-                    }
+
                     goto do_swap;
                 }
 
@@ -1121,12 +1106,7 @@ void painter_newell_sancha(Model3D* model, int face_count) {
                     printf("Test 7 passed for faces %d and %d\n", f1, f2);
                     keypress();
                     } 
-                    // XXX
-                    if (ordered_pairs != NULL && ordered_pairs_count < ordered_pairs_capacity) {
-                    ordered_pairs[ordered_pairs_count].face1 = f2;
-                    ordered_pairs[ordered_pairs_count].face2 = f1;
-                    ordered_pairs_count++;
-                    }
+
                     goto do_swap;
                 }
 
