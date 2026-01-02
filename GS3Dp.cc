@@ -673,6 +673,18 @@ static int cmp_faces_by_zmean(const void* pa, const void* pb) {
     return 0;
 }
 
+// Global structure & buffers for inconclusive pairs (moved from painter_newell_sancha)
+// Structure pour stocker les paires non résolues
+typedef struct {
+    int face1;
+    int face2;
+} InconclusivePair;
+
+// Global buffers; initialized per-call in painter_newell_sancha
+static int inconclusive_pairs_capacity = 0;
+static InconclusivePair* inconclusive_pairs = NULL;
+static int inconclusive_pairs_count = 0;
+
 /**
  * FAST VERSION: Only performs Test 1 (depth overlap), Test 2 (X bbox), Test 3 (Y bbox)
  * No plane coefficients, no pair caching. Much faster but less robust.
@@ -759,23 +771,19 @@ void painter_newell_sancha(Model3D* model, int face_count) {
 
 
     // Gestion des paires de faces non résolues (inconclusive)
-    // Structure pour stocker les paires non résolues
-    typedef struct {
-        int face1;
-        int face2;
-    } InconclusivePair;
+    // (Moved to global scope to allow wider access and avoid redefinition)
     // Préallocation unique : meilleure performance en évitant realloc fréquents.
     // On préalloue une capacité basée sur face_count * 4 (choix empirique).
-    int inconclusive_pairs_capacity = face_count * 4;
-    InconclusivePair* inconclusive_pairs = NULL;
+    inconclusive_pairs_capacity = face_count * 4;
+    inconclusive_pairs = NULL;
     if (inconclusive_pairs_capacity > 0) {
         inconclusive_pairs = (InconclusivePair*)malloc(inconclusive_pairs_capacity * sizeof(InconclusivePair));
         if (!inconclusive_pairs) {
-            // Si l'allocation échoue, revenir au mode dynamique par-REALLOCATION (capacity = 0)
+            // Si l'allocation échoue, revenir au mode dynamique par réallocation (capacity = 0)
             inconclusive_pairs_capacity = 0;
         }
     }
-    int inconclusive_pairs_count = 0;
+    inconclusive_pairs_count = 0;
 
     // Tri à bulle des faces avec correction d'ordre
     do {
@@ -1134,9 +1142,7 @@ void painter_newell_sancha(Model3D* model, int face_count) {
         if (ENABLE_DEBUG_SAVE){
                 printf("NON CONCLUTANT POUR LES FACES %d ET %d\n", f1, f2);
                 keypress();
-        }
-        printf("NON CONCLUTANT POUR LES FACES %d ET %d\n", f1, f2);
-                keypress();
+        }    
        if (inconclusive_pairs != NULL && inconclusive_pairs_count < inconclusive_pairs_capacity) {
                 inconclusive_pairs[inconclusive_pairs_count].face1 = f1;
                 inconclusive_pairs[inconclusive_pairs_count].face2 = f2;
@@ -1168,7 +1174,15 @@ void painter_newell_sancha(Model3D* model, int face_count) {
         printf("Total swaps: %d, Inconclusive pairs: %d\n", swap_count, inconclusive);
         if (inconclusive > 0) keypress();
     }
-    
+
+
+    // XXX
+    printf("inconclusive_pairs_count = %d\n", inconclusive_pairs_count);
+    keypress();
+
+
+
+        
     // Libérer la mémoire de la liste des paires ordonnées
     if (ordered_pairs) {
         free(ordered_pairs);
