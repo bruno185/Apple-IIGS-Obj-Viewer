@@ -736,7 +736,6 @@ void painter_newell_sancha(Model3D* model, int face_count) {
     
     int swap_count = 0;
     int swapped = 0; // flag utilisé par la boucle de correction
-    int inconclusive = 0; // compteur de paires non résolues
 
 
     // Gestion des paires de faces ordonnées
@@ -1130,7 +1129,6 @@ void painter_newell_sancha(Model3D* model, int face_count) {
         skipT7: 
         // Si on arrive ici, c'est que auncun test n'a pas permis de conclure
         // 0n devrait découper f1 par f2 (ou inversement), mais on ne le fait pas pour l'instant
-        inconclusive += 1;
         if (ENABLE_DEBUG_SAVE){
                 printf("NON CONCLUTANT POUR LES FACES %d ET %d\n", f1, f2);
                 keypress();
@@ -3263,7 +3261,6 @@ void DoText() {
         int colorpalette = 0; // default color palette
         int last_process_time_start = 0;
         int last_process_time_end = 0;
-
 
 
     newmodel:
