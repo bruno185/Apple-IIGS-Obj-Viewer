@@ -314,7 +314,7 @@ static inline int normalize_deg(int deg) {
 // ============================================================================
 
 // Performance and debug configuration
-#define ENABLE_DEBUG_SAVE 0    // 1 = Enable debug save (SLOW!), 0 = Disable
+#define ENABLE_DEBUG_SAVE 0     // 1 = Enable debug save (SLOW!), 0 = Disable
 //#define PERFORMANCE_MODE 0      // 1 = Optimized performance mode, 0 = Debug mode
 // OPTIMIZATION: Performance mode - disable printf
 #define PERFORMANCE_MODE 1      // 1 = no printf, 0 = normal printf
@@ -728,7 +728,17 @@ void painter_newell_sancha_fast(Model3D* model, int face_count) {
     qsort(faces->sorted_face_indices, face_count, sizeof(int), cmp_faces_by_zmean);
     qsort_faces_ptr_for_cmp = NULL;
 
+}
 
+
+void debug_two_faces(Model3D* model, int f1, int f2) {
+    startgraph(mode);
+    drawFace(model, f1);
+    keypress();
+    drawFace(model, f2);
+    keypress();
+    endgraph();
+    DoText();
 }
 
 void painter_newell_sancha(Model3D* model, int face_count) {
@@ -737,12 +747,16 @@ void painter_newell_sancha(Model3D* model, int face_count) {
     FaceArrays3D* faces = &model->faces;
     VertexArrays3D* vtx = &model->vertices;
     int i, j;
+    
     Fixed32* face_zmean = faces->z_mean;
     if (!face_zmean) return; // sécurité
 
 
-    long t_start = GetTick();
+    // * * * * * 
     // Etape 1 : Tri Z décroissant STABLE sur la moyenne, avec tie-breaker sur l'indice d'origine
+    // * * * * *
+
+    long t_start = GetTick();
     for (i = 0; i < face_count; i++) faces->sorted_face_indices[i] = i;
     // Use qsort for O(n log n) sorting while preserving the exact tie-breaker
     qsort_faces_ptr_for_cmp = faces;
@@ -756,7 +770,10 @@ void painter_newell_sancha(Model3D* model, int face_count) {
         printf("[TIMING] initial sort (qsort): %ld ticks (%.2f ms)\n", elapsed, ms);
     }
     
-    // Correction stricte d'ordre avec les deux tests de plan (Newell/Sancha)
+   
+    // * * * * *
+    // Etape 2 : Boucle de correction d'ordre avec tests successifs
+    // * * * * *
     
     int swap_count = 0;
     int swapped = 0; // flag utilisé par la boucle de correction
@@ -783,6 +800,7 @@ void painter_newell_sancha(Model3D* model, int face_count) {
     int ordered_pairs_count = 0;
 
 
+
     // Tri à bulle des faces avec correction d'ordre
     do {
         swapped = 0;
@@ -803,13 +821,7 @@ void painter_newell_sancha(Model3D* model, int face_count) {
 
             // show faces to be tested (only in debug mode)
             if (ENABLE_DEBUG_SAVE) {
-                startgraph(mode);
-                drawFace(model, f1);
-                keypress();
-                drawFace(model, f2);
-                keypress();
-                endgraph();
-                DoText();
+            debug_two_faces(model, f1, f2);
             }
 
             // Vérifier si cette paire a déjà été ordonnée définitivement
@@ -817,6 +829,10 @@ void painter_newell_sancha(Model3D* model, int face_count) {
             int p;
             for (p = 0; p < ordered_pairs_count; p++) {
                 if (ordered_pairs[p].face1 == f1 && ordered_pairs[p].face2 == f2) {
+                    already_ordered = 1;
+                    break;
+                }
+                if (ordered_pairs[p].face1 == f2 && ordered_pairs[p].face2 == f1) {
                     already_ordered = 1;
                     break;
                 }
@@ -1143,6 +1159,11 @@ void painter_newell_sancha(Model3D* model, int face_count) {
                 printf("NON CONCLUTANT POUR LES FACES %d ET %d\n", f1, f2);
                 keypress();
         }
+                printf("NON CONCLUTANT POUR LES FACES %d ET %d\n", f1, f2);
+                keypress();
+
+
+
         // on les met dans la liste des paires ordonnées pour ne plus les tester
         // puisque les tests n'ont pas permis de conclure,l'ordre actuel est conservé
         if (ordered_pairs != NULL && ordered_pairs_count < ordered_pairs_capacity) {
@@ -1162,13 +1183,13 @@ void painter_newell_sancha(Model3D* model, int face_count) {
         }
 
     } while (swapped);
+    // Fin du tri à bulle
 
     
     if (ENABLE_DEBUG_SAVE) {
         printf("Total swaps: %d, Inconclusive pairs: %d\n", swap_count, inconclusive);
         if (inconclusive > 0) keypress();
     }
-    
     
     // Libérer la mémoire de la liste des paires ordonnées
     if (ordered_pairs) {
