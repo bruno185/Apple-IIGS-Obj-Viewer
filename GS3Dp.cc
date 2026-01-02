@@ -596,48 +596,6 @@ int readVertices(const char* filename, VertexArrays3D* vtx, int max_vertices, Mo
  *   f 4 5 6 7      (quadrilateral with vertices 4, 5, 6, 7)
  */
 
-/**
- * 3D GEOMETRIC TRANSFORMATION FUNCTIONS
- * =====================================
- */
-
-/**
- * projectTo2D
- * 
- * DESCRIPTION:
- *   Projects the transformed 3D coordinates onto a 2D screen using
- *   perspective projection. Also applies a final rotation
- *   in the 2D plane.
- * 
- * PARAMETERS:
- *   vertices     : Array of vertices to project
- *   vertex_count : Number of vertices in the array
-
-/**
- * projectTo2D
- * 
- * DESCRIPTION:
- *   Projects the transformed 3D coordinates onto a 2D screen using
- *   perspective projection. Also applies a final rotation
- *   in the 2D plane.
- * 
- * PARAMETERS:
- *   vertices     : Array of vertices to project
- *   vertex_count : Number of vertices in the array
- *   angle_w      : Rotation angle in the 2D plane (degrees)
- * 
- * ALGORITHM:
- *   1. Perspective projection: x2d = (xo * scale) / zo + center_x
- *   2. Same for y2d with Y-axis inversion
- *   3. Final rotation in the 2D plane according to angle_w
- *   4. Points behind observer (zo <= 0) marked invisible
- * 
- * RESULTING COORDINATES:
- *   The x2d, y2d fields of the vertices contain the final screen coordinates.
- */
-
-
-
 
 void getObserverParams(ObserverParams* params, Model3D* model);
 
@@ -780,12 +738,12 @@ void painter_newell_sancha(Model3D* model, int face_count) {
     int inconclusive = 0; // compteur de paires non résolues
 
 
-    // Structure pour stocker les paires de faces ordonnées
+    // Gestion des paires de faces ordonnées
+    // Structure pour stocker les paires déjà ordonnées
     typedef struct {
         int face1;  // Face qui doit être avant = la plus éloignée
         int face2;  // Face qui doit être après = la plus proche
     } OrderedPair;
-    
     // Préallocation unique : meilleure performance en évitant realloc fréquents.
     // On préalloue une capacité basée sur face_count * 4 (choix empirique).
     int ordered_pairs_capacity = face_count * 4;
@@ -800,6 +758,24 @@ void painter_newell_sancha(Model3D* model, int face_count) {
     int ordered_pairs_count = 0;
 
 
+    // Gestion des paires de faces non résolues (inconclusive)
+    // Structure pour stocker les paires non résolues
+    typedef struct {
+        int face1;
+        int face2;
+    } InconclusivePair;
+    // Préallocation unique : meilleure performance en évitant realloc fréquents.
+    // On préalloue une capacité basée sur face_count * 4 (choix empirique).
+    int inconclusive_pairs_capacity = face_count * 4;
+    InconclusivePair* inconclusive_pairs = NULL;
+    if (inconclusive_pairs_capacity > 0) {
+        inconclusive_pairs = (InconclusivePair*)malloc(inconclusive_pairs_capacity * sizeof(InconclusivePair));
+        if (!inconclusive_pairs) {
+            // Si l'allocation échoue, revenir au mode dynamique par-REALLOCATION (capacity = 0)
+            inconclusive_pairs_capacity = 0;
+        }
+    }
+    int inconclusive_pairs_count = 0;
 
     // Tri à bulle des faces avec correction d'ordre
     do {
@@ -1159,11 +1135,13 @@ void painter_newell_sancha(Model3D* model, int face_count) {
                 printf("NON CONCLUTANT POUR LES FACES %d ET %d\n", f1, f2);
                 keypress();
         }
-                printf("NON CONCLUTANT POUR LES FACES %d ET %d\n", f1, f2);
+        printf("NON CONCLUTANT POUR LES FACES %d ET %d\n", f1, f2);
                 keypress();
-
-
-
+       if (inconclusive_pairs != NULL && inconclusive_pairs_count < inconclusive_pairs_capacity) {
+                inconclusive_pairs[inconclusive_pairs_count].face1 = f1;
+                inconclusive_pairs[inconclusive_pairs_count].face2 = f2;
+                inconclusive_pairs_count++;
+            }
         // on les met dans la liste des paires ordonnées pour ne plus les tester
         // puisque les tests n'ont pas permis de conclure,l'ordre actuel est conservé
         if (ordered_pairs != NULL && ordered_pairs_count < ordered_pairs_capacity) {
@@ -1194,7 +1172,10 @@ void painter_newell_sancha(Model3D* model, int face_count) {
     // Libérer la mémoire de la liste des paires ordonnées
     if (ordered_pairs) {
         free(ordered_pairs);
-    }    
+    }  
+    if (inconclusive_pairs) {
+        free(inconclusive_pairs);
+    }  
 }
 
 /* Float-based painter: reproduces Windows numeric behaviour exactly
@@ -2527,8 +2508,6 @@ int readFaces_model(const char* filename, Model3D* model) {
     return face_count;
 }
 
-// projectTo2D removed: The helper projection function was unused and is removed to reduce dead code.
-// If a standalone projection helper is required again in the future, reintroduce it with unit tests and clear usage sites.
 
 /**
  * CALCULATING MINIMUM FACE DEPTHS AND VISIBILITY FLAGS
