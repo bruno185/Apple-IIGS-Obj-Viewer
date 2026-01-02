@@ -94,9 +94,6 @@ static int *f_plane_conv_buf = NULL; /* 0 = not converted from fixed, 1 = conver
 static int *order_buf = NULL; static int order_cap = 0;
 
 
-// Utility: next power of two
-static int next_pow2_int(int x) { int p = 1; while (p < x) p <<= 1; return p; }
-
 static void ensure_vertex_capacity(int vcount) {
     if (float_vcap >= vcount) return;
     int newcap = (vcount + 15) & ~15; // align
@@ -136,14 +133,6 @@ static void ensure_order_capacity(int face_count) {
     int newcap = (face_count + 7) & ~7;
     order_buf = (int*)realloc(order_buf, sizeof(int)*newcap);
     order_cap = newcap;
-}
-
-// Comparator for float z_mean ordering (used by painter_newell_sancha_float)
-static float* qsort_float_zmean = NULL;
-static int cmp_float_zmean(const void* pa, const void* pb) {
-    int a = *(const int*)pa; int b = *(const int*)pb;
-    float za = qsort_float_zmean[a]; float zb = qsort_float_zmean[b];
-    if (za > zb) return -1; if (za < zb) return 1; if (a < b) return -1; if (a > b) return 1; return 0;
 }
 
 // ============================================================================
@@ -3296,6 +3285,9 @@ void DoText() {
         /* Initialize global projection scale to a sensible default (pixels per projected unit) */
         s_global_proj_scale_fixed = INT_TO_FIXED(100);
 
+        // Initialize inconclusive pairs counter
+        inconclusive_pairs_count = 0; // clear inconclusive pairs
+
         /* Optional: enable float painter to reproduce Windows numeric behaviour exactly via env var USE_FLOAT_PAINTER=1 */
         {
             const char* tmp = getenv("USE_FLOAT_PAINTER");
@@ -3579,10 +3571,12 @@ case 102: // 'f'
     painter_mode = (painter_mode + 1) % 3; // cycle 0->1->2->0...
     if (painter_mode == PAINTER_MODE_FAST) {
         printf("Painter mode: FAST (simple face sorting only)\n");
+        inconclusive_pairs_count = 0; // clear inconclusive pairs in fast mode
     } else if (painter_mode == PAINTER_MODE_FIXED) {
         printf("Painter mode: NORMAL (full tests, Fixed32/64)\n");
     } else {
         printf("Painter mode: FLOAT (float-based painter)\n");
+        inconclusive_pairs_count = 0; // clear inconclusive pairs in float mode
     }
     if (model != NULL) {
         printf("Reprocessing model with current mode...\n");
