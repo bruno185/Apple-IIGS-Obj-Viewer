@@ -75,6 +75,7 @@ int readVertices_last_count = 0;
 static Handle globalPolyHandle = NULL;
 static int poly_handle_locked = 0;  // Track lock state
 static int framePolyOnly = 0; // Toggle: 1 = frame-only, 0 = fill+frame (default: filled polygons)
+static int cull_back_faces = 1; // Toggle: 1 = enable back-face culling (observer-space), 0 = disable
 #define PAINTER_MODE_FAST 0
 #define PAINTER_MODE_FIXED 1
 #define PAINTER_MODE_FLOAT 2
@@ -2543,6 +2544,7 @@ int readFaces_model(const char* filename, Model3D* model) {
  */
 void calculateFaceDepths(Model3D* model, Face3D* faces, int face_count) {
     int i, j;
+    int culled_count = 0; // diagnostic: number of faces culled by back-face test (observer-space)
     VertexArrays3D* vtx = &model->vertices;
     FaceArrays3D* face_arrays = &model->faces;
     
@@ -2631,6 +2633,19 @@ void calculateFaceDepths(Model3D* model, Face3D* faces, int face_count) {
                 face_arrays->plane_b[i] = b64;
                 face_arrays->plane_c[i] = c64;
                 face_arrays->plane_d[i] = d64;
+
+                // Optional back-face culling in observer-space: if the plane D term is <= 0,
+                // the plane faces away from the observer (origin), so cull the face when enabled.
+                if (cull_back_faces && display_flag) {
+                    // d64 is stored in face_arrays->plane_d[i]
+                    if (d64 <= 0) {
+                        display_flag = 0;
+                        ++culled_count;
+                        if (!PERFORMANCE_MODE) {
+                            printf("[DEBUG] CULL: Face %d culled (plane_d=%.6f)\n", i, FIXED64_TO_FLOAT(d64));
+                        }
+                    }
+                }
             }
         }
 
@@ -2667,6 +2682,10 @@ void calculateFaceDepths(Model3D* model, Face3D* faces, int face_count) {
             face_arrays->miny[i] = 0;
             face_arrays->maxy[i] = 0;
         }
+    }
+
+    if (cull_back_faces && !PERFORMANCE_MODE) {
+        printf("[DEBUG] calculateFaceDepths: culled %d faces by back-face test\n", culled_count);
     }
 }
 
@@ -3589,6 +3608,16 @@ case 112: // 'p'
                 if (!framePolyOnly && model != NULL) {
                     // Switched back to filled polygons — re-run full processing to recompute depths & ordering
                     printf("Switching to filled mode: reprocessing model (sorting faces)...\n");
+                    processModelFast(model, &params, filename);
+                }
+                goto loopReDraw;
+
+case 66:  // 'B' - toggle back-face culling (observer-space d<=0 test)
+case 98:  // 'b'
+                cull_back_faces ^= 1;
+                printf("Back-face culling: %s\n", cull_back_faces ? "ON" : "OFF");
+                if (model != NULL) {
+                    printf("Reprocessing model with culling %s...\n", cull_back_faces ? "ON" : "OFF");
                     processModelFast(model, &params, filename);
                 }
                 goto loopReDraw;
