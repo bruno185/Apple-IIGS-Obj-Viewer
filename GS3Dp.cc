@@ -774,8 +774,11 @@ void painter_newell_sancha(Model3D* model, int face_count) {
     // (Moved to global scope to allow wider access and avoid redefinition)
     // Préallocation unique : meilleure performance en évitant realloc fréquents.
     // On préalloue une capacité basée sur face_count * 4 (choix empirique).
+    if (inconclusive_pairs) {
+        free(inconclusive_pairs);
+        inconclusive_pairs = NULL;
+    }
     inconclusive_pairs_capacity = face_count * 4;
-    inconclusive_pairs = NULL;
     if (inconclusive_pairs_capacity > 0) {
         inconclusive_pairs = (InconclusivePair*)malloc(inconclusive_pairs_capacity * sizeof(InconclusivePair));
         if (!inconclusive_pairs) {
@@ -859,7 +862,7 @@ void painter_newell_sancha(Model3D* model, int face_count) {
             Fixed64 b2 = faces->plane_b[f2];
             Fixed64 c2 = faces->plane_c[f2];
             Fixed64 d2 = faces->plane_d[f2];
-            Fixed32 epsilon = FLOAT_TO_FIXED(0.001f);
+            Fixed32 epsilon = FLOAT_TO_FIXED(0.01f);
 
             int obs_side1 = 0; // côté de l'observateur par rapport au plan de f1 : +1, -1 ou 0 (inconclusive)
             int obs_side2 = 0; // côté de l'observateur par rapport au plan de f2 : +1, -1 ou 0 (inconclusive)
@@ -1159,7 +1162,6 @@ void painter_newell_sancha(Model3D* model, int face_count) {
         endfor: ;
         } // FIN de la boucle for int i=0; i<face_count-1; i++
 
-
         if (ENABLE_DEBUG_SAVE) {
             printf("Pass completed, swaps this pass: %d\n", swap_count);
             printf("t1=%d t2=%d t3=%d t4=%d t5=%d t6=%d t7=%d\n", t1, t2, t3, t4, t5, t6, t7);
@@ -1171,25 +1173,15 @@ void painter_newell_sancha(Model3D* model, int face_count) {
 
     
     if (ENABLE_DEBUG_SAVE) {
-        printf("Total swaps: %d, Inconclusive pairs: %d\n", swap_count, inconclusive);
-        if (inconclusive > 0) keypress();
+        printf("Total swaps: %d, Inconclusive pairs: %d, ordored pairs: %d\n", swap_count, inconclusive_pairs_count, ordered_pairs_count);
+        keypress();
     }
 
-
-    // XXX
-    printf("inconclusive_pairs_count = %d\n", inconclusive_pairs_count);
-    keypress();
-
-
-
-        
     // Libérer la mémoire de la liste des paires ordonnées
     if (ordered_pairs) {
         free(ordered_pairs);
     }  
-    if (inconclusive_pairs) {
-        free(inconclusive_pairs);
-    }  
+ 
 }
 
 /* Float-based painter: reproduces Windows numeric behaviour exactly
@@ -2993,7 +2985,7 @@ void drawPolygons(Model3D* model, int* vertex_count, int face_count, int vertex_
     // Use global persistent handle to avoid repeated NewHandle/DisposeHandle
     // Each call allocates fresh if needed, but reuses same handle block
     if (globalPolyHandle == NULL) {
-        int max_polySize = 2 + 8 + (4 * 4);  // Max for quad (4 vertices)
+        int max_polySize = 2 + 8 + (MAX_FACE_VERTICES * 4);  // Max for MAX_FACE_VERTICES vertices
         globalPolyHandle = NewHandle((long)max_polySize, userid(), 0xC014, 0L);
         if (globalPolyHandle == NULL) {
             printf("Error: Unable to allocate global polygon handle\n");
@@ -3004,14 +2996,15 @@ void drawPolygons(Model3D* model, int* vertex_count, int face_count, int vertex_
     polyHandle = globalPolyHandle;
     
     // Make sure handle is unlocked before locking
-    if (poly_handle_locked) {
-        HUnlock(polyHandle);
-        poly_handle_locked = 0;
+    if (poly_handle_locked) { 
+        HUnlock(polyHandle); 
+        poly_handle_locked = 0; 
     }
-    HLock(polyHandle);
+    HLock(polyHandle); 
     poly_handle_locked = 1;
 
     SetPenMode(0);
+    // printf("\nDrawing polygons on screen:\n");
     // printf("\nDrawing polygons on screen:\n");
 
     // Set fill pen once per frame (reduces state changes)
@@ -3104,6 +3097,102 @@ void drawPolygons(Model3D* model, int* vertex_count, int face_count, int vertex_
     // Print statistics after drawing
 //     printf("Display statistics: %d valid faces drawn, %d invalid faces skipped\n", valid_faces_drawn, invalid_faces_skipped);
 //     printf("Triangles: %d, Quads: %d\n", triangle_count, quad_count);
+}
+
+// Frame in white all polygons listed in inconclusive_pairs.
+// Only adds this function; does not modify existing code.
+void frameInconclusivePairs(Model3D* model) {
+    if (!model) return;
+    FaceArrays3D* faces = &model->faces;
+    VertexArrays3D* vtx = &model->vertices;
+    if (inconclusive_pairs == NULL || inconclusive_pairs_count == 0) return;
+
+    // Ensure global handle exists (allocate based on maximum supported vertices)
+    if (globalPolyHandle == NULL) {
+        int max_polySize = 2 + 8 + (MAX_FACE_VERTICES * 4);
+        globalPolyHandle = NewHandle((long)max_polySize, userid(), 0xC014, 0L);
+        if (globalPolyHandle == NULL) {
+            printf("Error: Unable to allocate global polygon handle\n");
+            return;
+        }
+    }
+
+    Handle polyHandle = globalPolyHandle;
+    if (poly_handle_locked) { HUnlock(polyHandle); poly_handle_locked = 0; }
+    HLock(polyHandle); poly_handle_locked = 1;
+
+    DynamicPolygon *poly = (DynamicPolygon *)*polyHandle;
+
+    // Iterate the inconclusive pairs and frame both faces (face1 and face2)
+    for (int p = 0; p < inconclusive_pairs_count; ++p) {
+        int pair_faces[2] = { inconclusive_pairs[p].face1, inconclusive_pairs[p].face2 };
+        for (int pf = 0; pf < 2; ++pf) {
+            int face_id = pair_faces[pf];
+            if (face_id < 0 || face_id >= faces->face_count) continue;
+            if (faces->display_flag[face_id] == 0) continue;
+            int vcount_face = faces->vertex_count[face_id];
+            if (vcount_face < 3 || vcount_face > MAX_FACE_VERTICES) continue;
+
+            int offset = faces->vertex_indices_ptr[face_id];
+            int *indices_base = &faces->vertex_indices_buffer[offset];
+
+            // Quick validity pass
+            int all_valid = 1;
+            for (int j = 0; j < vcount_face; ++j) {
+                int vi = indices_base[j] - 1;
+                if (vi < 0 || vi >= vtx->vertex_count) { all_valid = 0; break; }
+            }
+            if (!all_valid) continue;
+
+            // Build polygon using the same conventions as drawPolygons (screenScale applied to X)
+            int screenScale = mode / 320;
+            int polySize = 2 + 8 + (vcount_face * 4);
+            poly->polySize = polySize;
+
+            int first_vi = indices_base[0] - 1;
+            int px = vtx->x2d[first_vi];
+            int py = vtx->y2d[first_vi];
+            poly->polyPoints[0].h = screenScale * px;
+            poly->polyPoints[0].v = py;
+            int min_x = px, max_x = px, min_y = py, max_y = py;
+
+            for (int j = 1; j < vcount_face; ++j) {
+                int vi = indices_base[j] - 1;
+                px = vtx->x2d[vi];
+                py = vtx->y2d[vi];
+                poly->polyPoints[j].h = screenScale * px;
+                poly->polyPoints[j].v = py;
+                if (px < min_x) min_x = px;
+                if (px > max_x) max_x = px;
+                if (py < min_y) min_y = py;
+                if (py > max_y) max_y = py;
+            }
+
+            poly->polyBBox.h1 = min_x;
+            poly->polyBBox.v1 = min_y;
+            poly->polyBBox.h2 = max_x;
+            poly->polyBBox.v2 = max_y;
+
+            // Bounding-box culling (convert to screen pixels)
+            int screenW = screenScale * (CENTRE_X * 2);
+            int screenH = screenScale * (CENTRE_Y * 2);
+            int sc_min_x = screenScale * min_x;
+            int sc_max_x = screenScale * max_x;
+            int sc_min_y = screenScale * min_y;
+            int sc_max_y = screenScale * max_y;
+            if (sc_max_x < 0 || sc_min_x >= screenW || sc_max_y < 0 || sc_min_y >= screenH) continue;
+
+            // Frame polygon in white (use same pen as drawPolygons framing)
+            SetSolidPenPat(10);
+            Pattern pat;
+            GetPenPat(pat);
+            FillPoly(polyHandle, pat);
+            SetSolidPenPat(9);
+            FramePoly(polyHandle);
+        }
+    }
+
+    // Keep handle locked (consistent with drawing code)
 }
 
 // Simple helper: compute 2D projected coordinates from observer-space coords and a projection scale
@@ -3341,7 +3430,11 @@ void DoText() {
                 if (colorpalette == 1) { 
                     DoColor(); 
                 }
-
+                // S'il y a des paire inconclusive, on les souligne à l'affichage
+                if (inconclusive_pairs_count > 0) {
+                    frameInconclusivePairs(model);  
+                }
+                
                 // Wait for key press and get key code
         asm 
             {
@@ -3487,7 +3580,7 @@ case 102: // 'f'
     if (painter_mode == PAINTER_MODE_FAST) {
         printf("Painter mode: FAST (simple face sorting only)\n");
     } else if (painter_mode == PAINTER_MODE_FIXED) {
-        printf("Painter mode: NORMAL (full tests, Fixed32)\n");
+        printf("Painter mode: NORMAL (full tests, Fixed32/64)\n");
     } else {
         printf("Painter mode: FLOAT (float-based painter)\n");
     }
