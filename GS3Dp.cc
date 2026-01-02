@@ -3483,6 +3483,7 @@ void DoText() {
                 if (painter_mode == PAINTER_MODE_FAST) printf("    Painter mode: FAST (simple face sorting only)\n");
                 else if (painter_mode == PAINTER_MODE_FIXED) printf("    Painter mode: NORMAL (Fixed32/64)\n");
                 else printf("    Painter mode: FLOAT (float-based)\n\n");
+                printf("    Back-face culling: %s\n", cull_back_faces ? "ON" : "OFF");
                 printf ("Processing time: %d ticks (1/60 sec.)\n", last_process_time_end - last_process_time_start);
                 printf("===================================\n");
                 printf("\n");
@@ -3659,6 +3660,7 @@ case 98:  // 'b'
                 printf("C: Toggle color palette display\n");
                 printf("F: Toggle fast painter (default: ON — simple face sorting only)\n");
                 printf("P: Toggle frame-only polygons (default: OFF)\n");
+                printf("B: Toggle back-face culling (observer-space D<=0)\n");
                 printf("E: Dump face equations to equ.csv (debug)\n");
                 printf("N: Load new model\n");
                 printf("H: Display this help message\n");
