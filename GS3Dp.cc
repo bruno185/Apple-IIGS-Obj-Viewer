@@ -1,45 +1,46 @@
 /*
  * ============================================================================
- *                              GS3Df.CC - Fixed32 Optimized Version
+ *                              GS3Dp.cc - Fixed32 Optimized Implementation
  * ============================================================================
- * 
- * 3D rendering program for Apple IIGS with ORCA/C - FIXED POINT VERSION
- * Version 0.4 Fixed-Point 64-bit - Ultra-Optimized Fixed32 Arithmetic
- * 
- * DESCRIPTION:
- *   This program reads 3D model files in simplified OBJ format,
- *   applies 3D geometric transformations (rotation, translation),
- *   projects the points on a 2D screen, and draws the resulting polygons
- *   using QuickDraw.
- *   
- *   This is the OPTIMIZED VERSION using Fixed32 16.16 arithmetic with
- *   lookup tables and 64-bit overflow protection. 
- *   Significantly faster performance compared to SANE Extended reference version.
- * 
- * FEATURES:
- *   - Reading OBJ files (vertices "v" and faces "f")
- *   - 3D transformations using Fixed32 16.16 arithmetic
- *   - 64-bit arithmetic for overflow-safe multiplication/division
- *   - Perspective projection on 2D screen
- *   - Graphic rendering with QuickDraw
- *   - Interactive interface with corrected parameter display
- *   - Performance measurements for comparison with SANE version
- * 
- * ARITHMETIC:
- *   - Fixed32 16.16 format (16 bits integer + 16 bits fractional)
- *   - FIXED_SCALE = 65536, optimized FIXED_MUL_64/FIXED_DIV_64
- *   - Pre-computed trigonometric lookup tables
- *   - Overflow-safe 64-bit intermediate calculations
- * 
- * PERFORMANCE OPTIMIZATIONS:
- *   - Direct lookup table access: rad = deg_to_rad_table[degree]
- *   - Combined transformation+projection pipeline
- *   - Pre-calculated trigonometric products
- *   - Eliminated function calls in critical loops
- * 
- * AUTHOR: Bruno
- * DATE: 2025
- * PLATFORM: Apple IIGS - ORCA/C with Fixed32 arithmetic
+ *
+ * Purpose:
+ *   High-performance 3D viewer implementing the GS3Dp painter algorithm with
+ *   multiple painter modes (FAST / FIXED / FLOAT). Reads simplified OBJ files
+ *   (vertices "v" and faces "f"), transforms them into observer space,
+ *   projects to 2D screen coordinates and renders filled polygons.
+ *
+ * Highlights (2026):
+ *   - Multi-platform targets: Apple IIGS (ORCA/C, QuickDraw), Win32 native
+ *     viewer (GDI) and an SDL2-based viewer.
+ *   - Painter modes:
+ *       * FAST  : z_mean + bbox tests (very fast, less robust)
+ *       * FIXED : full fixed-point Newell/Sancha implementation with pairwise
+ *                 tests and corrections (robust)
+ *       * FLOAT : float-based painter that reuses cached float buffers for
+ *                 higher throughput on float-capable platforms
+ *   - Observer-space back-face culling toggle (`B` key) that marks faces as
+ *     non-displayable and restricts sorting to visible faces for correctness
+ *     and speed when enabled.
+ *   - Diagnostic helpers: inconclusive pair recording, `frameInconclusivePairs()`
+ *     for visual debugging, and timing instrumentation to measure stages.
+ *   - Performance: heavy Fixed32 optimizations, precomputed trig tables, buffer
+ *     reuse to avoid allocations and selective sorting when culling is active.
+ *
+ * Responsibilities (per-frame):
+ *   - Transform vertices (Fixed32) to observer-space (xo/yo/zo).
+ *   - Project to integer screen coordinates (x2d/y2d).
+ *   - Compute per-face metrics: z_min/z_max/z_mean, bbox, plane coefficients.
+ *   - Dispatch to the selected painter to populate `sorted_face_indices`.
+ *   - Provide debug overlays (frame inconclusive pairs) and logging.
+ *
+ * Notes:
+ *   - This file has evolved beyond the original Apple IIGS reference to include
+ *     platform-specific frontends while preserving the algorithmic core.
+ *   - The code is optimized for interactive use; use the FAST painter for
+ *     high frame-rate, or FIXED/FLOAT modes for correctness on tricky geometry.
+ *
+ * Author: Bruno
+ * Date: 2026-01-03
  * ============================================================================
  */
 
@@ -75,7 +76,16 @@ int readVertices_last_count = 0;
 static Handle globalPolyHandle = NULL;
 static int poly_handle_locked = 0;  // Track lock state
 static int framePolyOnly = 0; // Toggle: 1 = frame-only, 0 = fill+frame (default: filled polygons)
-static int cull_back_faces = 1; // Toggle: 1 = enable back-face culling (observer-space), 0 = disable
+
+// Runtime back-face culling toggle
+// - When enabled (1): an **observer-space** back-face test is performed per face during
+//   `calculateFaceDepths()` using the face plane D term (observer-space d <= 0 => culled).
+// - Faces culled by this test are marked with `display_flag = 0`. They are **excluded** from
+//   the visible subset the painter sorts (to improve correctness and performance), but are
+//   appended after visible faces in `sorted_face_indices` to preserve array stability.
+// - Drawing still checks `display_flag` and will skip culled faces; toggling happens at runtime
+//   via the `B` key in the UI when interacting with the program.
+static int cull_back_faces = 1; // default: enabled
 #define PAINTER_MODE_FAST 0
 #define PAINTER_MODE_FIXED 1
 #define PAINTER_MODE_FLOAT 2
@@ -641,12 +651,37 @@ void calculateFaceDepths(Model3D* model, Face3D* faces, int face_count);
 
 
 /**
- * PAINTER'S ALGORITHM - NEWELL/SANCHA
- * ===================================
- * Tri Z décroissant, puis test de recouvrement 2D (bounding box)
- * Corrige l'ordre si recouvrement ambigu (sans split)
+ * PAINTER'S ALGORITHM - NEWELL / SANCHA (detailed)
+ * =================================================
+ * Overview:
+ *  - The painter builds an ordering of faces for correct filled-polygon rendering without
+ *    performing geometric splits. The algorithm follows the Newell/Sancha approach:
+ *      1) Compute per-face depth metrics (z_min/z_max/z_mean) and planar coefficients.
+ *      2) Initially sort faces by z_mean (descending) to obtain a broadly correct depth order.
+ *      3) Use axis-aligned bounding-box overlap tests (X and Y) to detect candidate overlapping faces.
+ *      4) For overlapping pairs, apply robust pairwise ordering tests using plane/triangle votes and
+ *         local sampling; if the order is ambiguous, record the pair in the `inconclusive_pairs`
+ *         buffer for diagnostic framing and later inspection (no automatic splitting).
  *
- * Appel : painter_newell_sancha(model, face_count);
+ * Visibility & culling:
+ *  - When `cull_back_faces` is enabled, the painter operates primarily on the subset of faces
+ *    with `display_flag == 1` (visible). Culled faces are appended afterwards to preserve
+ *    stable indices and deterministic behavior of `sorted_face_indices`.
+ *
+ * Modes:
+ *  - FAST: performs only low-cost tests (depth + bbox) and skips plane calculations for speed.
+ *  - FIXED: Full fixed-point Newell/Sancha implementation with all pairwise tests and corrections.
+ *  - FLOAT: Same algorithm implemented with float intermediates (optimized for clarity/speed on
+ *           systems with faster float math); plane coefficients and buffers are cached.
+ *
+ * Notes:
+ *  - The algorithm is intentionally conservative: inconclusive pairs are stored rather than
+ *    forcing a risky swap that may introduce visual artifacts.
+ *  - Use `frameInconclusivePairs()` in diagnostics to highlight such pairs in the rendered view.
+ *
+ * Usage:
+ *  - Call `painter_newell_sancha(model, face_count)` (or a mode-specific variant) after
+ *    `calculateFaceDepths()` / `processModelFast()` has computed observer-space coordinates.
  */
 
 // Comparator support for qsort in painter_newell_sancha
@@ -663,8 +698,26 @@ static int cmp_faces_by_zmean(const void* pa, const void* pb) {
     return 0;
 }
 
-// Global structure & buffers for inconclusive pairs (moved from painter_newell_sancha)
-// Structure pour stocker les paires non résolues
+// Global container for *inconclusive* ordering pairs
+// -------------------------------------------------------------------
+// Purpose:
+//   During the Newell/Sancha ordering pass, some face pairs cannot be conclusively
+//   ordered by the available tests (depth, bbox, plane votes, sampling). Instead of
+//   performing geometric splits (which would require mesh mutation), such pairs are
+//   recorded here for diagnostic purposes and optional framing in the UI.
+//
+// Implementation notes:
+//   - An `InconclusivePair` stores two face indices (face1, face2).
+//   - The buffer is preallocated to `face_count * 4` entries (heuristic) for performance
+//     and to avoid repeated reallocations during the sorting/correction pass.
+//   - `inconclusive_pairs_count` tracks the number of recorded pairs this frame.
+//   - Consumers: `frameInconclusivePairs()` draws these pairs; diagnostic logs print counts.
+//
+// Lifetime:
+//   Allocated by `painter_newell_sancha()` at the start of a sort pass and freed when the
+//   pass completes (or when resizing fails). The buffer is global to avoid per-call stack
+//   pressure and to simplify diagnostics.
+// -------------------------------------------------------------------
 typedef struct {
     int face1;
     int face2;
@@ -676,8 +729,21 @@ static InconclusivePair* inconclusive_pairs = NULL;
 static int inconclusive_pairs_count = 0;
 
 /**
- * FAST VERSION: Only performs Test 1 (depth overlap), Test 2 (X bbox), Test 3 (Y bbox)
- * No plane coefficients, no pair caching. Much faster but less robust.
+ * FAST PUBLISHABLE PASS (painter_newell_sancha_fast)
+ * --------------------------------------------------
+ * Purpose:
+ *   Very fast ordering pass intended for interactive / high-frame-rate use. This mode:
+ *    - Sorts visible faces by `z_mean` only (stable sort via qsort with tie-breaker on index).
+ *    - Performs only inexpensive overlap tests (axis-aligned X and Y bounding boxes) to
+ *      detect obvious separations. No plane coefficients, no Newell plane tests, and no
+ *      ordering corrections are computed.
+ *
+ * Tradeoffs:
+ *   - Much faster and suitable for large models, but may leave ordering ambiguities
+ *     unresolved (which shows up as graphical overlap artifacts for complex geometry).
+ *   - When `cull_back_faces` is set, this pass operates on the subset of faces with
+ *     `display_flag == 1` and appends culled faces after the visible list to keep indices
+ *     stable for downstream users.
  */
 void painter_newell_sancha_fast(Model3D* model, int face_count) {
     FaceArrays3D* faces = &model->faces;
@@ -764,37 +830,54 @@ void painter_newell_sancha(Model3D* model, int face_count) {
     
    
     // * * * * *
-    // Etape 2 : Boucle de correction d'ordre avec tests successifs
+    // Etape 2 : Boucle de correction d'ordre (adjacent-swap / bubble-like passes)
     // * * * * *
-    
+    // Algorithm rationale:
+    //  - After the coarse z_mean sort, adjacent faces may still be in the wrong order
+    //    due to overlap or interpenetration. We perform bubble-like passes over the
+    //    visible subset to correct local inversions using progressively stronger tests.
+    //  - Each adjacent pair (f1,f2) is subjected to a sequence of tests:
+    //      Test1: quick depth overlap (z_min/z_max)
+    //      Test2: X-axis bounding-box separation
+    //      Test3: Y-axis bounding-box separation
+    //      Test4..Test7: plane-based observer-side and vertex-plane consistency tests
+    //  - If any test conclusively determines f1 should be after f2, we perform an
+    //    adjacent swap and record the ordered pair to avoid re-testing the same relation.
+    //  - Ambiguous pairs that cannot be concluded by these tests are recorded in
+    //    `inconclusive_pairs` for diagnostic framing (no geometric splitting is performed).
+    //
+    // Implementation notes:
+    //  - We use a preallocated `ordered_pairs` buffer (capacity = face_count * 4 heuristic)
+    //    to remember definitive relations found during the passes. This prevents repeated
+    //    re-evaluation and improves performance on complex meshes.
+    //  - The bubble-like approach ensures stability of the result (only adjacent swaps)
+    //    while being simple to implement; in practice a small number of passes suffices.
+    //  - Complexity: O(P * visible_count) where P is number of passes (until no swaps).
+
     int swap_count = 0;
-    int swapped = 0; // flag utilisé par la boucle de correction
+    int swapped = 0; // flag used for the correction loop
 
 
-    // Gestion des paires de faces ordonnées
-    // Structure pour stocker les paires déjà ordonnées
+    // Ordered pairs cache: store definitive pairwise relations to avoid re-testing.
     typedef struct {
-        int face1;  // Face qui doit être avant = la plus éloignée
-        int face2;  // Face qui doit être après = la plus proche
+        int face1;  // Face that must be drawn before (farther)
+        int face2;  // Face that must be drawn after (closer)
     } OrderedPair;
-    // Préallocation unique : meilleure performance en évitant realloc fréquents.
-    // On préalloue une capacité basée sur face_count * 4 (choix empirique).
-    int ordered_pairs_capacity = face_count * 4;
+
+    int ordered_pairs_capacity = face_count * 4; // heuristic capacity to reduce reallocs
     OrderedPair* ordered_pairs = NULL;
     if (ordered_pairs_capacity > 0) {
         ordered_pairs = (OrderedPair*)malloc(ordered_pairs_capacity * sizeof(OrderedPair));
         if (!ordered_pairs) {
-            // Si l'allocation échoue, revenir au mode dynamique par réallocation (capacity = 0)
-            ordered_pairs_capacity = 0;
+            ordered_pairs_capacity = 0; // fall back to not caching ordered pairs
         }
     }
     int ordered_pairs_count = 0;
 
 
-    // Gestion des paires de faces non résolues (inconclusive)
-    // (Moved to global scope to allow wider access and avoid redefinition)
-    // Préallocation unique : meilleure performance en évitant realloc fréquents.
-    // On préalloue une capacité basée sur face_count * 4 (choix empirique).
+    // Prepare global inconclusive buffer for diagnostic recording. These pairs are
+    // intentionally left unresolved in order to avoid mesh splits; they can be
+    // inspected with `frameInconclusivePairs()` for debugging.
     if (inconclusive_pairs) {
         free(inconclusive_pairs);
         inconclusive_pairs = NULL;
@@ -803,13 +886,12 @@ void painter_newell_sancha(Model3D* model, int face_count) {
     if (inconclusive_pairs_capacity > 0) {
         inconclusive_pairs = (InconclusivePair*)malloc(inconclusive_pairs_capacity * sizeof(InconclusivePair));
         if (!inconclusive_pairs) {
-            // Si l'allocation échoue, revenir au mode dynamique par réallocation (capacity = 0)
             inconclusive_pairs_capacity = 0;
         }
     }
     inconclusive_pairs_count = 0;
 
-    // Tri à bulle des faces avec correction d'ordre
+    // Bubble-like correction passes (iterate until stable)
     do {
         swapped = 0;
    
@@ -832,23 +914,25 @@ void painter_newell_sancha(Model3D* model, int face_count) {
             debug_two_faces(model, f1, f2);
             }
 
-            // Vérifier si cette paire a déjà été ordonnée définitivement
+            // Skip pairs already declared ordered by previous swaps or tests.
+            // ordered_pairs stores definitive relations discovered earlier in the pass to
+            // avoid repeated work (e.g., if we previously determined f2 < f1 we won't re-evaluate).
             int already_ordered = 0;
             int p;
             for (p = 0; p < ordered_pairs_count; p++) {
                 if (ordered_pairs[p].face1 == f1 && ordered_pairs[p].face2 == f2) {
-                    already_ordered = 1;
-                    break;
+                    already_ordered = 1; break; // f1 before f2
                 }
                 if (ordered_pairs[p].face1 == f2 && ordered_pairs[p].face2 == f1) {
-                    already_ordered = 1;
-                    break;
+                    already_ordered = 1; break; // f2 before f1 (inverse relation)
                 }
             }
-            if (already_ordered) {
-                continue;
-            }
+            if (already_ordered) continue;
 
+            // Test 1: Depth overlap (cheap rejection/acceptance)
+            // - If f2's farthest point is in front of f1's nearest point, the order f1->f2
+            //   is respected (no swap). Conversely, if f1's farthest is in front of f2's nearest
+            //   we *must* swap. This is a conservative quick test that filters many non-overlapping cases.
             t1++;
             // Test 1 : Depth overlap
             // Depth quick test: if farthest point of P2 is in front of nearest point of P1, order is respected
@@ -859,15 +943,18 @@ void painter_newell_sancha(Model3D* model, int face_count) {
             // Use cached bounding boxes (computed in calculateFaceDepths)
 
             t2++;
-            // Test 2 : X overlap only
+            // Test 2 : X overlap only (axis-aligned bbox separation test)
+            // If bounding boxes do not intersect on X, faces cannot overlap on screen and
+            // the current order is safe.
             int minx1 = faces->minx[f1], maxx1 = faces->maxx[f1], miny1 = faces->miny[f1], maxy1 = faces->maxy[f1];
             int minx2 = faces->minx[f2], maxx2 = faces->maxx[f2], miny2 = faces->miny[f2], maxy2 = faces->maxy[f2];
 
-            if (maxx1 <= minx2 || maxx2 <= minx1) continue;
+            if (maxx1 <= minx2 || maxx2 <= minx1) continue; // separated on X
             
             t3++;
-            // Test 3 : Y overlap only
-            if (maxy1 <= miny2 || maxy2 <= miny1) continue;
+            // Test 3 : Y overlap only (axis-aligned bbox separation test)
+            // Similarly, if separated on Y, faces do not overlap and no swap is needed.
+            if (maxy1 <= miny2 || maxy2 <= miny1) continue; // separated on Y
 
             // Use cached plane normals and d terms computed in calculateFaceDepths
             int n1 = faces->vertex_count[f1];
@@ -895,8 +982,12 @@ void painter_newell_sancha(Model3D* model, int face_count) {
 
             // ********************* TEST 4 *********************
             t4++;
-            // Test si f2 est du même côté que l'observatur par rapport au plan de f1. 
-            // Si oui, f2 est bien devant f1, pas d'échange.
+            // Test 4: Is f2 entirely on the same observer-side of f1's plane?
+            // - Evaluate face-plane sign for the observer (d1) and then test every vertex of f2
+            //   against f1's plane (A1*x + B1*y + C1*z + D1). If all vertices are on the
+            //   same side as the observer (within epsilon), then f2 is conclusively in front
+            //   of f1 (no swap required). If any vertex is on the opposite side, the test fails
+            //   and we continue to stronger tests.
 
             if (ENABLE_DEBUG_SAVE) {
             printf("\n**** Test 4 : Testing faces %d and %d\n", f1, f2);
@@ -958,8 +1049,10 @@ void painter_newell_sancha(Model3D* model, int face_count) {
 
             // ********************* TEST 5 ********************
             t5++;
-            // Test si f1 est du coté opposé de l'observateur par rapport au plan de f2.      
-            // Si oui, f1 est derrière f2, pas d'échange
+            // Test 5: Is f1 entirely on the opposite side of f2's plane relative to the observer?
+            // - This is symmetric to Test 4: if every vertex of f1 is strictly on the opposite
+            //   side of f2's plane from the observer, then f1 is behind f2 and no swap is needed.
+            // - Both Test 4 and Test 5 are relatively cheap and frequently decisive on planar geometry.
 
             if (ENABLE_DEBUG_SAVE) {
             printf("Test 5 : Testing faces %d and %d\n", f1, f2);
@@ -1013,8 +1106,10 @@ void painter_newell_sancha(Model3D* model, int face_count) {
 
             // ********************* TEST 6 *********************
             t6++;
-            // Test si f2 est du côté opposé de l'observateur par rapport au plan de f1. 
-            // Si oui, f2 est derrière f1, on doit échanger l'ordre   
+            // Test 6: Is f2 entirely on the opposite side of f1's plane relative to the observer?
+            // - If all vertices of f2 are strictly on the opposite side, then f2 is behind f1 and
+            //   an adjacent swap is required (f2 should come after f1). This test often detects
+            //   clear occlusion relations and triggers swaps.
             if (ENABLE_DEBUG_SAVE) {
             printf("Test 6 : Testing faces %d and %d\n", f1, f2);
             printf("Face coefs: a1=%f, b1=%f, c1=%f, d1=%f\n", FIXED64_TO_FLOAT(a1), FIXED64_TO_FLOAT(b1), FIXED64_TO_FLOAT(c1), FIXED64_TO_FLOAT(d1));
@@ -1074,8 +1169,10 @@ void painter_newell_sancha(Model3D* model, int face_count) {
 
             // ********************* TEST 7 *********************
             t7++;
-            // Test 7 : Test si f1 est du même côté de l'observateur par rapport au plan de f2. 
-            // Si oui, f1 est devant f2, on doit échanger l'ordre
+            // Test 7: Is f1 entirely on the same side of f2's plane as the observer?
+            // - Symmetric to Test 6: if all vertices of f1 are on the observer side of f2's plane,
+            //   then f1 is in front of f2 and f1 should be drawn after f2 (swap required).
+            // - Passing Test 7 is a definitive reason to swap without further sampling.
 
             if (ENABLE_DEBUG_SAVE) {
             printf("Test 7 : Testing faces %d and %d\n", f1, f2);
@@ -1137,47 +1234,58 @@ void painter_newell_sancha(Model3D* model, int face_count) {
             do_swap: {
 
                 if (ENABLE_DEBUG_SAVE) {
-                printf("Swapping faces %d and %d\n", f1, f2);
-                // removed blocking keypress() to avoid hangs in GS runtime
+                    printf("Swapping faces %d and %d\n", f1, f2);
                 }
 
+                // Perform adjacent swap: this is an in-place stable operation and keeps
+                // changes local (simple bubble logic). We record the definitive ordered
+                // relation (f2 before f1 after swap) into `ordered_pairs` when possible
+                // so subsequent passes skip redundant checks.
                 int tmp = faces->sorted_face_indices[i];
                 faces->sorted_face_indices[i] = faces->sorted_face_indices[i+1];
                 faces->sorted_face_indices[i+1] = tmp;
                 swapped = 1;
                 swap_count++;
-                
-                // Ajouter cette paire à la liste des paires ordonnées
-                // Après l'échange, f2 est maintenant avant f1 dans le tableau
-                // Utiliser uniquement le buffer préalloué (pas de realloc) : si on dépasse la capacité, on ignore la paire
+
+                // Record the pair as an established ordering (if capacity permits).
+                // If we exceed capacity we silently drop the record — this only affects
+                // performance (more re-evaluation), not correctness.
                 if (ordered_pairs != NULL && ordered_pairs_count < ordered_pairs_capacity) {
-                    ordered_pairs[ordered_pairs_count].face1 = f2;
-                    ordered_pairs[ordered_pairs_count].face2 = f1;
+                    ordered_pairs[ordered_pairs_count].face1 = f2; // now before
+                    ordered_pairs[ordered_pairs_count].face2 = f1; // now after
                     ordered_pairs_count++;
                 }
+
+                // After a swap we skip ahead to the next pass iteration (goto ends current pair loop)
                 goto endfor;
             }
 
         
         skipT7: 
-        // Si on arrive ici, c'est que auncun test n'a pas permis de conclure
-        // 0n devrait découper f1 par f2 (ou inversement), mais on ne le fait pas pour l'instant
+        // If we reach here no test conclusively determined a strict ordering.
+        // Splitting faces would be the correct geometrically robust fix, but that
+        // requires mesh modifications which are out of scope. Instead we:
+        //  - Record the pair as INCONCLUSIVE for diagnostics (so it can be framed).
+        //  - Add an entry to ordered_pairs to prevent repeatedly re-testing the same pair
+        //    during subsequent passes; the current order is left unchanged as a best-effort
+        //    stable choice.
         if (ENABLE_DEBUG_SAVE){
                 printf("NON CONCLUTANT POUR LES FACES %d ET %d\n", f1, f2);
                 keypress();
-        }    
-       if (inconclusive_pairs != NULL && inconclusive_pairs_count < inconclusive_pairs_capacity) {
+        }
+        // Record inconclusive pair (for diagnostic framing)
+        if (inconclusive_pairs != NULL && inconclusive_pairs_count < inconclusive_pairs_capacity) {
                 inconclusive_pairs[inconclusive_pairs_count].face1 = f1;
                 inconclusive_pairs[inconclusive_pairs_count].face2 = f2;
                 inconclusive_pairs_count++;
-            }
-        // on les met dans la liste des paires ordonnées pour ne plus les tester
-        // puisque les tests n'ont pas permis de conclure,l'ordre actuel est conservé
+        }
+        // Prevent re-testing by recording the current ordering as an ordered pair (best-effort)
+        // Note: we store f2,f1 to mean "f2 should be before f1" reflecting the current state.
         if (ordered_pairs != NULL && ordered_pairs_count < ordered_pairs_capacity) {
                 ordered_pairs[ordered_pairs_count].face1 = f2;
                 ordered_pairs[ordered_pairs_count].face2 = f1;
                 ordered_pairs_count++;
-            }
+        }
         
         endfor: ;
         } // FIN de la boucle for int i=0; i<face_count-1; i++
@@ -1197,7 +1305,10 @@ void painter_newell_sancha(Model3D* model, int face_count) {
         keypress();
     }
 
-    // Libérer la mémoire de la liste des paires ordonnées
+    // Free temporary ordered_pairs cache: inconclusive_pairs remains available
+    // for diagnostics (frameInconclusivePairs() may be called after the painter pass).
+    // We intentionally do not free `inconclusive_pairs` here so that callers can inspect
+    // or render ambiguous pairs. If memory is a concern, callers can explicitly free it.
     if (ordered_pairs) {
         free(ordered_pairs);
     }  
@@ -2083,8 +2194,23 @@ void getObserverParams(ObserverParams* params, Model3D* model) {
 }
 
 /**
- * ULTRA-FAST FUNCTION: Combined Transformation + Projection
- * ==========================================================
+ * processModelFast -- Combined transformation, projection, and painter invocation
+ * ============================================================================
+ * Responsibilities:
+ *  - Transform model vertices into observer-space (xo/yo/zo) using Fixed32 arithmetic.
+ *  - Project to integer screen coords (x2d/y2d) using configured projection scale.
+ *  - If using the FLOAT painter mode, populate float caches (float_xo/float_yo/float_zo etc.)
+ *    used by the float-based painter for efficient per-face computations.
+ *  - Call `calculateFaceDepths()` to compute per-face depth metrics, bboxes and plane coeffs.
+ *  - Dispatch to the selected painter implementation (FAST, FIXED, or FLOAT) to build
+ *    the final `sorted_face_indices` for rendering.
+ *
+ * Notes:
+ *  - Autoscaling (fitModelToView) is **not** performed here; any autoscale must be applied
+ *    before calling `processModelFast()` (e.g. at load time or via explicit user action).
+ *  - The painter may only sort the visible faces when back-face culling is enabled. Culled
+ *    faces are appended after visible faces to preserve index stability.
+ *  - Timing instrumentation prints per-stage costs when not in PERFORMANCE_MODE.
  */
 void processModelFast(Model3D* model, ObserverParams* params, const char* filename) {
     int i;
@@ -2574,26 +2700,37 @@ int readFaces_model(const char* filename, Model3D* model) {
  *   faces      : Array of faces to process  
  *   face_count : Number of faces
  * 
- * ALGORITHM:
- *   For each face:
- *   - Initialize z_min with very large value (9999.0)
- *   - Initialize display_flag as true (displayable)
- *   - For each vertex of the face:
- *     * Check if vertex is behind camera (zo <= 0)
- *     * If ANY vertex is behind camera, set display_flag = false
- *     * Update z_min with minimum zo value found (closest vertex)
- *   - Store both z_min and display_flag in the face structure
- * 
- * CULLING LOGIC:
- *   - If ANY vertex has zo <= 0, the entire face is marked as non-displayable
- *   - This prevents rendering artifacts from perspective projection errors
- *   - Improves performance by eliminating faces early in the pipeline
- * 
- * NOTES:
- *   - Must be called AFTER transformToObserver() or processModelFast()
- *   - Uses zo coordinates (observer system depth)
- *   - Lower z_min value means face is closer to camera (should draw first in painter's algorithm)
- *   - display_flag = 1 means visible, 0 means hidden (behind camera)
+ * PER-FACE DEPTH, BBOX, & PLANE COMPUTATION (calculateFaceDepths)
+ * ================================================================
+ * Purpose:
+ *   Compute per-face metrics required by the painters and diagnostics:
+ *     - z_min, z_max and z_mean (observer-space depths) used for coarse sorting
+ *     - screen-space axis-aligned bounding box (min/max X/Y) used for cheap overlap tests
+ *     - planar coefficients (Newell method) A/B/C/D for robust face-plane tests
+ *     - `display_flag` indicating basic visibility (behind-camera or culled by plane test)
+ *
+ * Algorithm summary (per face):
+ *   1) Iterate vertices in observer-space (xo/yo/zo). If any vertex has zo <= 0, mark
+ *      `display_flag = 0` (non-displayable) to avoid projection artefacts.
+ *   2) Accumulate z_min/z_max and compute z_mean (used by initial z-sorting in the painter).
+ *   3) Compute the face's axis-aligned bbox from integer screen coords (x2d/y2d) for quick
+ *      overlap tests (used by Newell/Sancha tests 2 and 3).
+ *   4) Compute planar coefficients (A,B,C,D) using Newell's method; these are used to
+ *      perform finer pairwise tests and the optional **observer-space back-face culling**
+ *      if `cull_back_faces` is enabled (test D <= 0 indicates a back-face relative to observer).
+ *
+ * Implementation notes:
+ *   - Plane coefficients are kept both in Fixed32 (for fixed-mode painter) and cached/converted
+ *     to float buffers for the FLOAT painter mode. Conversion flags track whether a float copy
+ *     is available to avoid repeated conversions.
+ *   - `display_flag == 1` means the face is eligible for drawing; `0` indicates it is either
+ *     behind the camera or culled by the observer-space back-face test when enabled.
+ *   - This function must be called AFTER vertex transforms into observer-space (e.g. by
+ *     `processModelFast()` or `transformToObserver()`), because it reads xo/yo/zo/x2d/y2d arrays.
+ *
+ * Performance & debug:
+ *   - The function optionally logs culling counts when not in PERFORMANCE_MODE.
+ *   - The function is intentionally designed to be O(n) over faces and linear in face vertex counts.
  */
 void calculateFaceDepths(Model3D* model, Face3D* faces, int face_count) {
     int i, j;
@@ -3158,8 +3295,12 @@ void drawPolygons(Model3D* model, int* vertex_count, int face_count, int vertex_
 //     printf("Triangles: %d, Quads: %d\n", triangle_count, quad_count);
 }
 
-// Frame in white all polygons listed in inconclusive_pairs.
-// Only adds this function; does not modify existing code.
+// Diagnostic: Frame in white all polygons listed in `inconclusive_pairs`.
+//
+// This helper iterates the recorded ambiguous pairs and draws a white outline around both
+// polygons in each pair so developers can visually inspect cases where the painter could
+// not conclusively determine a stable order. It is a pure rendering aid (no state changes
+// beyond drawing) and is invoked only in diagnostic/debug modes or on explicit user request.
 void frameInconclusivePairs(Model3D* model) {
     if (!model) return;
     FaceArrays3D* faces = &model->faces;
