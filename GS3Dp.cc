@@ -801,19 +801,37 @@ void painter_newell_sancha(Model3D* model, int face_count) {
     // * * * * *
 
     long t_start = GetTick();
-    // Build list of faces to sort: when culling is enabled, only visible faces are sorted
+    // Build list of faces to sort.
+    //
+    // When observer-space back-face culling is enabled (`cull_back_faces == 1`), we
+    // only **sort the subset** of faces that are considered visible (`display_flag == 1`).
+    // Raison:
+    //  - Performance: qsort is O(n log n); sorting fewer faces reduces CPU time for complex meshes.
+    //  - Correctness: some painter tests rely on per-face plane data; excluding culled faces
+    //    from the primary sort prevents spurious re-ordering and reduces false corrections.
+    //
+    // Implementation detail (stability):
+    //  - We place all visible faces first in `faces->sorted_face_indices[0..visible_count-1]`.
+    //  - Then we append the culled faces at the end of the array (unchanged relative order).
+    //    This keeps the `sorted_face_indices` array full and *stable* across frames and toggles.
+    //    The drawing code still checks `display_flag` and will skip culled faces, so appending
+    //    them simply preserves indices without affecting rendering.
+    //
+    // Note: `visible_count` is the number of entries that must be passed to the sorting
+    // routine (qsort) so that only visible faces are reordered.
     int visible_count = face_count;
     if (cull_back_faces) {
         visible_count = 0;
         for (i = 0; i < face_count; ++i) {
             if (faces->display_flag[i]) faces->sorted_face_indices[visible_count++] = i;
         }
-        // append culled faces for stability (they will be skipped at draw time)
+        // Append culled (non-visible) faces after visible ones to preserve array stability.
         int tail = visible_count;
         for (i = 0; i < face_count; ++i) {
             if (!faces->display_flag[i]) faces->sorted_face_indices[tail++] = i;
         }
     } else {
+        // If culling is disabled, include all faces in the initial list (simple identity)
         for (i = 0; i < face_count; i++) faces->sorted_face_indices[i] = i;
     }
     // Use qsort for O(n log n) sorting while preserving the exact tie-breaker, applied only to visible faces
@@ -856,7 +874,6 @@ void painter_newell_sancha(Model3D* model, int face_count) {
 
     int swap_count = 0;
     int swapped = 0; // flag used for the correction loop
-
 
     // Ordered pairs cache: store definitive pairwise relations to avoid re-testing.
     typedef struct {
@@ -1262,30 +1279,24 @@ void painter_newell_sancha(Model3D* model, int face_count) {
 
         
         skipT7: 
-        // If we reach here no test conclusively determined a strict ordering.
-        // Splitting faces would be the correct geometrically robust fix, but that
-        // requires mesh modifications which are out of scope. Instead we:
-        //  - Record the pair as INCONCLUSIVE for diagnostics (so it can be framed).
-        //  - Add an entry to ordered_pairs to prevent repeatedly re-testing the same pair
-        //    during subsequent passes; the current order is left unchanged as a best-effort
-        //    stable choice.
+        // Si on arrive ici, c'est que auncun test n'a pas permis de conclure
+        // 0n devrait découper f1 par f2 (ou inversement), mais on ne le fait pas pour l'instant
         if (ENABLE_DEBUG_SAVE){
                 printf("NON CONCLUTANT POUR LES FACES %d ET %d\n", f1, f2);
                 keypress();
-        }
-        // Record inconclusive pair (for diagnostic framing)
-        if (inconclusive_pairs != NULL && inconclusive_pairs_count < inconclusive_pairs_capacity) {
+        }    
+       if (inconclusive_pairs != NULL && inconclusive_pairs_count < inconclusive_pairs_capacity) {
                 inconclusive_pairs[inconclusive_pairs_count].face1 = f1;
                 inconclusive_pairs[inconclusive_pairs_count].face2 = f2;
                 inconclusive_pairs_count++;
-        }
-        // Prevent re-testing by recording the current ordering as an ordered pair (best-effort)
-        // Note: we store f2,f1 to mean "f2 should be before f1" reflecting the current state.
+            }
+        // on les met dans la liste des paires ordonnées pour ne plus les tester
+        // puisque les tests n'ont pas permis de conclure,l'ordre actuel est conservé
         if (ordered_pairs != NULL && ordered_pairs_count < ordered_pairs_capacity) {
                 ordered_pairs[ordered_pairs_count].face1 = f2;
                 ordered_pairs[ordered_pairs_count].face2 = f1;
                 ordered_pairs_count++;
-        }
+            }
         
         endfor: ;
         } // FIN de la boucle for int i=0; i<face_count-1; i++
@@ -1305,18 +1316,210 @@ void painter_newell_sancha(Model3D* model, int face_count) {
         keypress();
     }
 
-    // Free temporary ordered_pairs cache: inconclusive_pairs remains available
-    // for diagnostics (frameInconclusivePairs() may be called after the painter pass).
-    // We intentionally do not free `inconclusive_pairs` here so that callers can inspect
-    // or render ambiguous pairs. If memory is a concern, callers can explicitly free it.
+    // Libérer la mémoire de la liste des paires ordonnées
     if (ordered_pairs) {
         free(ordered_pairs);
     }  
  
 }
 
+
+/**
+ * painter_newell_sanchaV2 -- Variant using optimized bubble sort
+ * --------------------------------------------------------------
+ * Behavior:
+ *  - Semantically identical to `painter_newell_sancha()` but uses an optimized
+ *    bubble-sort style outer loop (decreasing upper bound + early exit on sorted)
+ *    as requested (see pseudo-code in the change request).
+ *  - The pairwise comparison performed for deciding swaps is the same sequence of
+ *    tests (1..7) used by the original algorithm (depth, bbox X/Y, plane tests).
+ *
+ * Rationale:
+ *  - This variant attempts to minimize the number of pair tests by reducing the
+ *    inner loop range as larger elements bubble toward the end of the array; it
+ *    also exits early if no swaps occur in a pass.
+ */
+void painter_newell_sanchaV2(Model3D* model, int face_count) {
+    if (use_float_painter) { painter_newell_sancha_float(model, face_count); return; }
+    FaceArrays3D* faces = &model->faces;
+    VertexArrays3D* vtx = &model->vertices;
+    int i, j;
+    Fixed32* face_zmean = faces->z_mean;
+    if (!face_zmean) return; // safety
+
+    // Step 1: initial ordering by z_mean (descending stable sort on visible subset)
+    int visible_count = face_count;
+    if (cull_back_faces) {
+        visible_count = 0;
+        for (i = 0; i < face_count; ++i) {
+            if (faces->display_flag[i]) faces->sorted_face_indices[visible_count++] = i;
+        }
+        int tail = visible_count;
+        for (i = 0; i < face_count; ++i) {
+            if (!faces->display_flag[i]) faces->sorted_face_indices[tail++] = i;
+        }
+    } else {
+        for (i = 0; i < face_count; ++i) faces->sorted_face_indices[i] = i;
+    }
+    qsort_faces_ptr_for_cmp = faces;
+    qsort(faces->sorted_face_indices, visible_count, sizeof(int), cmp_faces_by_zmean);
+    qsort_faces_ptr_for_cmp = NULL;
+
+    // Prepare caches and diagnostic buffers (same strategy as V1)
+    typedef struct { int face1; int face2; } OrderedPair;
+    int ordered_pairs_capacity = face_count * 4;
+    OrderedPair* ordered_pairs = NULL;
+    if (ordered_pairs_capacity > 0) {
+        ordered_pairs = (OrderedPair*)malloc(ordered_pairs_capacity * sizeof(OrderedPair));
+        if (!ordered_pairs) ordered_pairs_capacity = 0;
+    }
+    int ordered_pairs_count = 0;
+
+    if (inconclusive_pairs) { free(inconclusive_pairs); inconclusive_pairs = NULL; }
+    inconclusive_pairs_capacity = face_count * 4;
+    if (inconclusive_pairs_capacity > 0) {
+        inconclusive_pairs = (InconclusivePair*)malloc(inconclusive_pairs_capacity * sizeof(InconclusivePair));
+        if (!inconclusive_pairs) inconclusive_pairs_capacity = 0;
+    }
+    inconclusive_pairs_count = 0;
+
+    // Optimized bubble-like passes: outer bound decreases each pass, early exit when sorted
+    int swap_count = 0;
+    for (int pass = visible_count - 1; pass >= 1; --pass) {
+        int tableau_trie = 1; // true: no swaps so far in this pass
+        for (j = 0; j <= pass - 1; ++j) {
+            int f1 = faces->sorted_face_indices[j];
+            int f2 = faces->sorted_face_indices[j+1];
+
+            // Skip pairs already declared ordered
+            int already_ordered = 0;
+            for (int p = 0; p < ordered_pairs_count; ++p) {
+                if ((ordered_pairs[p].face1 == f1 && ordered_pairs[p].face2 == f2) ||
+                    (ordered_pairs[p].face1 == f2 && ordered_pairs[p].face2 == f1)) { already_ordered = 1; break; }
+            }
+            if (already_ordered) continue;
+
+            // --- Test 1: Depth overlap (cheap) ---
+            if (faces->z_max[f2] <= faces->z_min[f1]) continue;
+            if (faces->z_max[f1] <= faces->z_min[f2]) {
+                // definite swap
+                int tmp = faces->sorted_face_indices[j]; faces->sorted_face_indices[j] = faces->sorted_face_indices[j+1]; faces->sorted_face_indices[j+1] = tmp;
+                tableau_trie = 0; swap_count++;
+                if (ordered_pairs != NULL && ordered_pairs_count < ordered_pairs_capacity) { ordered_pairs[ordered_pairs_count].face1 = f2; ordered_pairs[ordered_pairs_count].face2 = f1; ordered_pairs_count++; }
+                continue;
+            }
+
+            // --- Test 2: X bbox separation ---
+            int minx1 = faces->minx[f1], maxx1 = faces->maxx[f1], miny1 = faces->miny[f1], maxy1 = faces->maxy[f1];
+            int minx2 = faces->minx[f2], maxx2 = faces->maxx[f2], miny2 = faces->miny[f2], maxy2 = faces->maxy[f2];
+            if (maxx1 <= minx2 || maxx2 <= minx1) continue;
+
+            // --- Test 3: Y bbox separation ---
+            if (maxy1 <= miny2 || maxy2 <= miny1) continue;
+
+            // --- Tests 4..7: plane-based robust checks (copied from painter_newell_sancha) ---
+            int n1 = faces->vertex_count[f1];
+            int n2 = faces->vertex_count[f2];
+            int offset1 = faces->vertex_indices_ptr[f1];
+            int offset2 = faces->vertex_indices_ptr[f2];
+            int k;
+            Fixed64 a1 = faces->plane_a[f1]; Fixed64 b1 = faces->plane_b[f1]; Fixed64 c1 = faces->plane_c[f1]; Fixed64 d1 = faces->plane_d[f1];
+            Fixed64 a2 = faces->plane_a[f2]; Fixed64 b2 = faces->plane_b[f2]; Fixed64 c2 = faces->plane_c[f2]; Fixed64 d2 = faces->plane_d[f2];
+            Fixed32 epsilon = FLOAT_TO_FIXED(0.01f);
+
+            int obs_side1 = 0; int obs_side2 = 0; int side; int all_same_side; int all_opposite_side;
+
+            // Test 4
+            obs_side1 = 0; if (d1 > (Fixed64)epsilon) obs_side1 = 1; else if (d1 < -(Fixed64)epsilon) obs_side1 = -1; else goto skipT4V2;
+            all_same_side = 1;
+            for (k=0; k<n2; k++) {
+                int v = faces->vertex_indices_buffer[offset2+k]-1;
+                Fixed64 acc = 0;
+                acc  = (((Fixed64)a1 * (Fixed64)vtx->xo[v]) >> FIXED_SHIFT);
+                acc += (((Fixed64)b1 * (Fixed64)vtx->yo[v]) >> FIXED_SHIFT);
+                acc += (((Fixed64)c1 * (Fixed64)vtx->zo[v]) >> FIXED_SHIFT);
+                acc += (Fixed64)d1;
+                if  (acc > (Fixed64)epsilon) side = 1; else if (acc < -(Fixed64)epsilon) side = -1; else continue;
+                if (obs_side1 != side) { all_same_side = 0; break; }
+            }
+            if (all_same_side) continue;
+            skipT4V2: ;
+
+            // Test 5
+            obs_side2 = 0; if (d2 > (Fixed64)epsilon) obs_side2 = 1; else if (d2 < -(Fixed64)epsilon) obs_side2 = -1; else goto skipT5V2;
+            all_opposite_side = 1;
+            for (k=0; k<n1; k++) {
+                int v = faces->vertex_indices_buffer[offset1+k]-1;
+                Fixed64 acc = 0;
+                acc  = (((Fixed64)a2 * (Fixed64)vtx->xo[v]) >> FIXED_SHIFT);
+                acc += (((Fixed64)b2 * (Fixed64)vtx->yo[v]) >> FIXED_SHIFT);
+                acc += (((Fixed64)c2 * (Fixed64)vtx->zo[v]) >> FIXED_SHIFT);
+                acc += (Fixed64)d2;
+                if  (acc > (Fixed64)epsilon) side = 1; else if (acc < -(Fixed64)epsilon) side = -1; else continue;
+                if (obs_side2 == side) { all_opposite_side = 0; break; }
+            }
+            if (all_opposite_side) continue;
+            skipT5V2: ;
+
+            // Test 6
+            obs_side1 = 0; if (d1 > (Fixed64)epsilon) obs_side1 = 1; else if (d1 < -(Fixed64)epsilon) obs_side1 = -1; else goto skipT6V2;
+            all_opposite_side = 1;
+            for (k=0; k<n2; k++) {
+                int v = faces->vertex_indices_buffer[offset2+k]-1;
+                Fixed64 acc = 0;
+                acc  = (((Fixed64)a1 * (Fixed64)vtx->xo[v]) >> FIXED_SHIFT);
+                acc += (((Fixed64)b1 * (Fixed64)vtx->yo[v]) >> FIXED_SHIFT);
+                acc += (((Fixed64)c1 * (Fixed64)vtx->zo[v]) >> FIXED_SHIFT);
+                acc += (Fixed64)d1;
+                if  (acc > (Fixed64)epsilon) side = 1; else if  (acc < -(Fixed64)epsilon) side = -1; else continue;
+                if (obs_side1 == side) { all_opposite_side = 0; break; }
+            }
+            if (all_opposite_side) {
+                // swap
+                int tmp = faces->sorted_face_indices[j]; faces->sorted_face_indices[j] = faces->sorted_face_indices[j+1]; faces->sorted_face_indices[j+1] = tmp;
+                tableau_trie = 0; swap_count++;
+                if (ordered_pairs != NULL && ordered_pairs_count < ordered_pairs_capacity) { ordered_pairs[ordered_pairs_count].face1 = f2; ordered_pairs[ordered_pairs_count].face2 = f1; ordered_pairs_count++; }
+                continue;
+            }
+            skipT6V2: ;
+
+            // Test 7
+            obs_side2 = 0; if (d2 > (Fixed64)epsilon) obs_side2 = 1; else if (d2 < -(Fixed64)epsilon) obs_side2 = -1; else goto skipT7V2;
+            all_same_side = 1;
+            for (k=0; k<n1; k++) {
+                int v = faces->vertex_indices_buffer[offset1+k]-1;
+                Fixed64 acc = 0;
+                acc  = (((Fixed64)a2 * (Fixed64)vtx->xo[v]) >> FIXED_SHIFT);
+                acc += (((Fixed64)b2 * (Fixed64)vtx->yo[v]) >> FIXED_SHIFT);
+                acc += (((Fixed64)c2 * (Fixed64)vtx->zo[v]) >> FIXED_SHIFT);
+                acc += (Fixed64)d2;
+                if  (acc > (Fixed64)epsilon) side = 1; else if  (acc < -(Fixed64)epsilon) side = -1; else continue;
+                if (obs_side2 != side) { all_same_side = 0; break; }
+            }
+            if (all_same_side) {
+                int tmp = faces->sorted_face_indices[j]; faces->sorted_face_indices[j] = faces->sorted_face_indices[j+1]; faces->sorted_face_indices[j+1] = tmp;
+                tableau_trie = 0; swap_count++;
+                if (ordered_pairs != NULL && ordered_pairs_count < ordered_pairs_capacity) { ordered_pairs[ordered_pairs_count].face1 = f2; ordered_pairs[ordered_pairs_count].face2 = f1; ordered_pairs_count++; }
+                continue;
+            }
+            skipT7V2: ;
+
+            // Non-conclusive: record and avoid re-testing
+            if (inconclusive_pairs != NULL && inconclusive_pairs_count < inconclusive_pairs_capacity) {
+                inconclusive_pairs[inconclusive_pairs_count].face1 = f1; inconclusive_pairs[inconclusive_pairs_count].face2 = f2; inconclusive_pairs_count++;
+            }
+            if (ordered_pairs != NULL && ordered_pairs_count < ordered_pairs_capacity) { ordered_pairs[ordered_pairs_count].face1 = f2; ordered_pairs[ordered_pairs_count].face2 = f1; ordered_pairs_count++; }
+
+        } // end inner for j
+        if (tableau_trie) break; // early exit, already sorted
+    } // end passes
+
+    if (ordered_pairs) free(ordered_pairs);
+}
+
 /* Float-based painter: reproduces Windows numeric behaviour exactly
    Implemented as non-destructive function; enable via env var USE_FLOAT_PAINTER=1 */
+
 void painter_newell_sancha_float(Model3D* model, int face_count) {
     if (!model) return;
     VertexArrays3D* vtx = &model->vertices;
@@ -2308,7 +2511,7 @@ void processModelFast(Model3D* model, ObserverParams* params, const char* filena
     if (painter_mode == PAINTER_MODE_FAST) {
         painter_newell_sancha_fast(model, model->faces.face_count);
     } else if (painter_mode == PAINTER_MODE_FIXED) {
-        painter_newell_sancha(model, model->faces.face_count);
+        painter_newell_sanchaV2(model, model->faces.face_count);
     } else {
         // PAINTER_MODE_FLOAT
         painter_newell_sancha_float(model, model->faces.face_count);
