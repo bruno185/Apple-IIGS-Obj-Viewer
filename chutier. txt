@@ -1,6 +1,35 @@
 /* painter_newell_sanchaV3 - copied from GS3Dp.cc */
 
 
+/* Archived: fitModelToView (removed from GS3Dp.cc)
+ * void fitModelToView(Model3D* model, ObserverParams* params, float target_max_dim, float margin, float percentile, int center_flag)
+ *
+ * Archived here per request. This copy preserves the behavior that computes a centroid
+ * and stores it in the model struct without modifying vertex coordinates or params->distance.
+ */
+void fitModelToView(Model3D* model, ObserverParams* params, float target_max_dim, float margin, float percentile, int center_flag) {
+    if (model == NULL || params == NULL) return;
+    VertexArrays3D* vtx = &model->vertices;
+    int n = vtx->vertex_count; if (n <= 0) return;
+
+    double cx = 0.0, cy = 0.0, cz = 0.0; int count = 0;
+    for (int i = 0; i < n; ++i) {
+        Fixed32 xi = model->orig_x ? model->orig_x[i] : vtx->x[i];
+        Fixed32 yi = model->orig_y ? model->orig_y[i] : vtx->y[i];
+        Fixed32 zi = model->orig_z ? model->orig_z[i] : vtx->z[i];
+        cx += FIXED_TO_FLOAT(xi); cy += FIXED_TO_FLOAT(yi); cz += FIXED_TO_FLOAT(zi);
+        count++;
+    }
+    if (count > 0) {
+        cx /= (double)count; cy /= (double)count; cz /= (double)count;
+        model->auto_center_x = FLOAT_TO_FIXED((float)cx);
+        model->auto_center_y = FLOAT_TO_FIXED((float)cy);
+        model->auto_center_z = FLOAT_TO_FIXED((float)cz);
+        model->auto_centered = 0; // original implementation did not mark coords as modified
+    }
+}
+
+
 /**
  * painter_newell_sanchaV2 -- Variant using optimized bubble sort
  * --------------------------------------------------------------

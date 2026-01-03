@@ -298,9 +298,6 @@ static inline int FIXED_ROUND_TO_INT(Fixed32 x) {
 #define FIXED_DIV_64(a, b)  ((Fixed32)(((Fixed64)(a) << FIXED_SHIFT) / (Fixed64)(b)))
 #define FIXED64_TO_32(x)    ((Fixed32)(x))
 
-// NOTE: Fixed32 angle normalization removed — code now uses integer-degree
-// normalization via `normalize_deg(int)`. This avoids accidental usage of
-// Fixed32-based normalization when angles are stored as integer degrees.
 
 // Integer degree normalization
 static inline int normalize_deg(int deg) {
@@ -534,12 +531,12 @@ typedef struct {
     Fixed32 *orig_x;                   // NULL if no backup
     Fixed32 *orig_y;
     Fixed32 *orig_z;
-    /* radius buffer removed: no automatic fit/distance computation */
+
     float *coord_buf;               // scratch buffer for converted float coordinates (x,y,z interleaved)
     int coord_buf_capacity;         // capacity in number of vertices for coord_buf
 
     /* Bounding sphere (computed once at load) */
-    /* Bounding sphere fields removed: no longer used */
+
 } Model3D;
 
 // ============================================================================
@@ -596,20 +593,7 @@ int readVertices(const char* filename, VertexArrays3D* vtx, int max_vertices, Mo
  *   f 4 5 6 7      (quadrilateral with vertices 4, 5, 6, 7)
  */
 
-
 void getObserverParams(ObserverParams* params, Model3D* model);
-
-/* Auto-scaling helpers (non-destructive) removed: functions deleted to reduce dead code */
-
-// Fit model to view using sphere metric with percentile trimming (non-destructive)
-void fitModelToView(Model3D* model, ObserverParams* params, float target_max_dim, float margin, float percentile, int center_flag);
-
-// Fast distance adjust: try to approximate change in distance by scaling 2D coords and updating depths/plane_d.
-// Returns 1 if applied safely, 0 if caller should fall back to full recompute.
-
-
-// Internal helpers: backup/restore original vertex arrays (removed)
-
 
 /**
  * GRAPHIC RENDERING FUNCTIONS
@@ -1712,10 +1696,8 @@ Model3D* createModel3D(void) {
     model->auto_fit_ready = 0;
     model->auto_fit_applied = 0;
 
-    // radius_buf removed: no automatic vertex radius buffer maintained
     model->coord_buf = NULL;
     model->coord_buf_capacity = 0;
-    // bounding-sphere fields removed; nothing to initialize
     
     // Step 2: Allocate vertex arrays using malloc (handles bank crossing better)
     // Note: malloc() should handle bank boundaries better than NewHandle()
@@ -2092,8 +2074,6 @@ int loadModel3D(Model3D* model, const char* filename) {
     } else {
         model->faces.face_count = fcount;
     }
-    
-    // After loading vertices: bounding-sphere computations removed (auto-fit uses bbox-based heuristic)
     return 0;  // Success: model loaded (with or without faces)
 }
 
@@ -3003,51 +2983,6 @@ void dumpFaceEquationsCSV(Model3D* model, const char* csv_filename, int alt_form
     fclose(f);
     printf("Wrote face equations to %s (%d faces)\n", csv_filename, face_count);
 }
-
-
-/* Vertex-based distance helpers removed */
-
-// ==============================================================
-// Auto-scaling helpers removed
-// These functions were removed to reduce dead code. Reverting auto-scale is performed
-// inline where needed (keeps behavior but avoids maintaining unused public API).
-// ==============================================================
-
-
-
-// backupModelCoords / freeBackupModelCoords removed: backup functionality is no longer provided.
-// If we later need non-destructive transforms, reintroduce a clear backup API with tests.
-
-// Fit model to view using sphere-based metric with percentile trimming
-void fitModelToView(Model3D* model, ObserverParams* params, float target_max_dim, float margin, float percentile, int center_flag) {
-    // Auto-scaling and automatic distance calculations have been disabled per request.
-    // This function now only computes the centroid (if needed) and stores it; it will NOT modify
-    // vertex coordinates nor override params->distance which must be provided by the user.
-    if (model == NULL || params == NULL) return;
-    VertexArrays3D* vtx = &model->vertices;
-    int n = vtx->vertex_count; if (n <= 0) return;
-
-    // Compute centroid (using original coords if available)
-    double cx = 0.0, cy = 0.0, cz = 0.0; int count = 0;
-    for (int i = 0; i < n; ++i) {
-        Fixed32 xi = model->orig_x ? model->orig_x[i] : vtx->x[i];
-        Fixed32 yi = model->orig_y ? model->orig_y[i] : vtx->y[i];
-        Fixed32 zi = model->orig_z ? model->orig_z[i] : vtx->z[i];
-        cx += FIXED_TO_FLOAT(xi); cy += FIXED_TO_FLOAT(yi); cz += FIXED_TO_FLOAT(zi);
-        count++;
-    }
-    if (count > 0) {
-        cx /= (double)count; cy /= (double)count; cz /= (double)count;
-        model->auto_center_x = FLOAT_TO_FIXED((float)cx);
-        model->auto_center_y = FLOAT_TO_FIXED((float)cy);
-        model->auto_center_z = FLOAT_TO_FIXED((float)cz);
-        model->auto_centered = 0; // do not indicate that coords were auto-centered
-    }
-    // Do not modify params->distance; respect user-provided distance.
-    return;
-}
-
-
 
 // Helper macro to swap face indices in the sorted_face_indices array
 // (We swap indices, not the faces themselves, to keep the buffer intact)
