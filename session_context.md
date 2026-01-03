@@ -16,3 +16,4 @@ Guidelines:
 - Do not store secrets, passwords, or private keys here.
 - Prefer a single-line summary per session.
 - Use `python scripts/update_session_context.py` to append new entries easily.
+2026-01-03T13:35:28+00:00 | user | Replace PS1 helpers with Python scripts (commit 118c8d2) | done | scripts/*,README.md |
