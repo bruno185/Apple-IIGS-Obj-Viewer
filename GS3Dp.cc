@@ -3485,6 +3485,7 @@ void DoText() {
         int colorpalette = 0; // default color palette
         int last_process_time_start = 0;
         int last_process_time_end = 0;
+        int show_inconclusive = 1; // toggle: display inconclusive pair overlays (press 'i' to toggle)
 
 
     newmodel:
@@ -3643,8 +3644,8 @@ void DoText() {
                 if (colorpalette == 1) { 
                     DoColor(); 
                 }
-                // S'il y a des paire inconclusive, on les souligne à l'affichage
-                if (inconclusive_pairs_count > 0) {
+                // S'il y a des paire inconclusive et si l'affichage est activé, on les souligne à l'affichage
+                if (show_inconclusive && inconclusive_pairs_count > 0) {
                     frameInconclusivePairs(model);  
                 }
                 
@@ -3788,6 +3789,12 @@ void DoText() {
                 colorpalette ^= 1; // Toggle between 0 and 1
                 goto loopReDraw;
 
+            case 73:  // 'I' - toggle display of inconclusive face pairs
+            case 105: // 'i'
+                show_inconclusive ^= 1;
+                printf("Inconclusive pairs display: %s\n", show_inconclusive ? "ON" : "OFF");
+                goto loopReDraw;
+
 case 70:  // 'F' - cycle painter mode: fast -> normal -> float
 case 102: // 'f'
     painter_mode = (painter_mode + 1) % 3; // cycle 0->1->2->0...
@@ -3866,6 +3873,7 @@ case 98:  // 'b'
                 printf("F: Toggle fast painter (default: ON — simple face sorting only)\n");
                 printf("P: Toggle frame-only polygons (default: OFF)\n");
                 printf("B: Toggle back-face culling (observer-space D<=0)\n");
+                printf("I: Toggle display of inconclusive face pairs\n");
                 printf("E: Dump face equations to equ.csv (debug)\n");
                 printf("N: Load new model\n");
                 printf("H: Display this help message\n");
