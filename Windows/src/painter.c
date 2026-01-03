@@ -217,9 +217,20 @@ int compute_painter_order_V1(Model* m, int* order_out) {
             fclose(out);
         }
     }
-    for (int i=0;i<m->face_count;i++) order_out[i] = i;
-    qsort(order_out, m->face_count, sizeof(int), compar_face_qsort);
     int face_count = m->face_count;
+    // Build initial order: visible faces first when display_flag indicates non-visibility
+    int visible_count = face_count;
+    int idx = 0;
+    for (int i=0;i<face_count;i++) {
+        if (m->faces[i].display_flag) order_out[idx++] = i;
+    }
+    visible_count = idx;
+    int tail = visible_count;
+    for (int i=0;i<face_count;i++) {
+        if (!m->faces[i].display_flag) order_out[tail++] = i;
+    }
+    // Sort only visible faces by z_mean
+    qsort(order_out, visible_count, sizeof(int), compar_face_qsort);
     int swapped = 0;
     int ordered_pairs_capacity = face_count * 4;
     typedef struct { int face1; int face2; } OrderedPair;
@@ -227,7 +238,7 @@ int compute_painter_order_V1(Model* m, int* order_out) {
     if (ordered_pairs_capacity > 0) ordered_pairs = (OrderedPair*)malloc(sizeof(OrderedPair) * ordered_pairs_capacity);
     do {
         swapped = 0;
-        for (int i=0;i<face_count-1;i++) {
+        for (int i=0;i<visible_count-1;i++) {
             int f1 = order_out[i]; int f2 = order_out[i+1];
             int already_ordered = 0;
             for (int p=0;p<ordered_pairs_count;p++) { if (ordered_pairs[p].face1==f1 && ordered_pairs[p].face2==f2) { already_ordered = 1; break; } }
@@ -917,9 +928,20 @@ int compute_painter_order_V3(Model* m, int* order_out) {
     g_model = m;
     ObsVertex* obs = malloc(sizeof(ObsVertex)*m->vert_count); g_obsv = obs; compute_obs_vertices(m, obs);
     calculateFaceDepths(m);
-    for (int i=0;i<m->face_count;i++) order_out[i] = i;
-    qsort(order_out, m->face_count, sizeof(int), compar_face_qsort);
     int face_count = m->face_count;
+    // Build initial order: visible faces first when display_flag indicates non-visibility
+    int visible_count = face_count;
+    int idx = 0;
+    for (int i=0;i<face_count;i++) {
+        if (m->faces[i].display_flag) order_out[idx++] = i;
+    }
+    visible_count = idx;
+    int tail = visible_count;
+    for (int i=0;i<face_count;i++) {
+        if (!m->faces[i].display_flag) order_out[tail++] = i;
+    }
+    // Sort only visible faces by z_mean
+    qsort(order_out, visible_count, sizeof(int), compar_face_qsort);
     int swapped = 0;
     int ordered_pairs_capacity = face_count * 4;
     typedef struct { int face1; int face2; } OrderedPair;
@@ -927,7 +949,7 @@ int compute_painter_order_V3(Model* m, int* order_out) {
     if (ordered_pairs_capacity > 0) ordered_pairs = (OrderedPair*)malloc(sizeof(OrderedPair) * ordered_pairs_capacity);
     do {
         swapped = 0;
-        for (int i=0;i<face_count-1;i++) {
+        for (int i=0;i<visible_count-1;i++) {
             int f1 = order_out[i]; int f2 = order_out[i+1];
             int already_ordered = 0;
             for (int p=0;p<ordered_pairs_count;p++) { if (ordered_pairs[p].face1==f1 && ordered_pairs[p].face2==f2) { already_ordered = 1; break; } }

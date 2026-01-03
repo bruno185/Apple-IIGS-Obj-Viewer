@@ -683,9 +683,27 @@ void painter_newell_sancha_fast(Model3D* model, int face_count) {
     FaceArrays3D* faces = &model->faces;
     if (!faces->z_mean) return; // safety
 
-    // Initial stable sort by z_mean (descending) with tie-breaker on index
+    // Build list of faces to sort: when culling is enabled, only visible faces are sorted
+    int i;
+    int visible_count = face_count;
+    if (cull_back_faces) {
+        visible_count = 0;
+        // put visible faces first
+        for (i = 0; i < face_count; ++i) {
+            if (faces->display_flag[i]) faces->sorted_face_indices[visible_count++] = i;
+        }
+        // append culled faces to keep array content stable
+        int tail = visible_count;
+        for (i = 0; i < face_count; ++i) {
+            if (!faces->display_flag[i]) faces->sorted_face_indices[tail++] = i;
+        }
+    } else {
+        for (i = 0; i < face_count; ++i) faces->sorted_face_indices[i] = i;
+    }
+
+    // Initial stable sort by z_mean (descending) with tie-breaker on index, only on visible faces
     qsort_faces_ptr_for_cmp = faces;
-    qsort(faces->sorted_face_indices, face_count, sizeof(int), cmp_faces_by_zmean);
+    qsort(faces->sorted_face_indices, visible_count, sizeof(int), cmp_faces_by_zmean);
     qsort_faces_ptr_for_cmp = NULL;
 
 }
@@ -717,10 +735,24 @@ void painter_newell_sancha(Model3D* model, int face_count) {
     // * * * * *
 
     long t_start = GetTick();
-    for (i = 0; i < face_count; i++) faces->sorted_face_indices[i] = i;
-    // Use qsort for O(n log n) sorting while preserving the exact tie-breaker
+    // Build list of faces to sort: when culling is enabled, only visible faces are sorted
+    int visible_count = face_count;
+    if (cull_back_faces) {
+        visible_count = 0;
+        for (i = 0; i < face_count; ++i) {
+            if (faces->display_flag[i]) faces->sorted_face_indices[visible_count++] = i;
+        }
+        // append culled faces for stability (they will be skipped at draw time)
+        int tail = visible_count;
+        for (i = 0; i < face_count; ++i) {
+            if (!faces->display_flag[i]) faces->sorted_face_indices[tail++] = i;
+        }
+    } else {
+        for (i = 0; i < face_count; i++) faces->sorted_face_indices[i] = i;
+    }
+    // Use qsort for O(n log n) sorting while preserving the exact tie-breaker, applied only to visible faces
     qsort_faces_ptr_for_cmp = faces;
-    qsort(faces->sorted_face_indices, face_count, sizeof(int), cmp_faces_by_zmean);
+    qsort(faces->sorted_face_indices, visible_count, sizeof(int), cmp_faces_by_zmean);
     qsort_faces_ptr_for_cmp = NULL;
     long t_end = GetTick();
     if (!PERFORMANCE_MODE)
@@ -790,8 +822,8 @@ void painter_newell_sancha(Model3D* model, int face_count) {
         int t7 = 0;
 
 
-        // Parcours des paires consécutives
-        for (i = 0; i < face_count-1; i++) {
+        // Parcours des paires consécutives (seulement sur faces visibles si culling activé)
+        for (i = 0; i < visible_count-1; i++) {
             int f1 = faces->sorted_face_indices[i];
             int f2 = faces->sorted_face_indices[i+1];
 
@@ -1259,13 +1291,26 @@ void painter_newell_sancha_float(Model3D* model, int face_count) {
 
     // initial order: reuse buffer
     int* order = order_buf;
-    for (int i = 0; i < face_count; ++i) order[i] = i;
+    int visible_count = face_count;
+    if (cull_back_faces) {
+        visible_count = 0;
+        for (int i = 0; i < face_count; ++i) {
+            if (f_display[i]) order[visible_count++] = i;
+        }
+        // append culled faces to keep rest of array stable
+        int tail = visible_count;
+        for (int i = 0; i < face_count; ++i) {
+            if (!f_display[i]) order[tail++] = i;
+        }
+    } else {
+        for (int i = 0; i < face_count; ++i) order[i] = i;
+    }
 
-    // Sort faces by z_mean. For performance we use a simple bucket sort (linear time) when face_count is large,
+    // Sort faces by z_mean. For performance we use a simple bucket sort (linear time) when visible_count is large,
     // and insertion sort for small counts.
-    if (face_count <= 64) {
+    if (visible_count <= 64) {
         // insertion sort (descending)
-        for (int i = 1; i < face_count; ++i) {
+        for (int i = 1; i < visible_count; ++i) {
             int key = order[i];
             float kz = f_z_mean[key];
             int j = i - 1;
@@ -1278,18 +1323,18 @@ void painter_newell_sancha_float(Model3D* model, int face_count) {
             order[j+1] = key;
         }
     } else {
-        int buckets = (face_count < 256) ? face_count : 256;
+        int buckets = (visible_count < 256) ? visible_count : 256;
         float zmin_all = 1e30f, zmax_all = -1e30f;
-        for (int i = 0; i < face_count; ++i) { if (f_z_mean[i] < zmin_all) zmin_all = f_z_mean[i]; if (f_z_mean[i] > zmax_all) zmax_all = f_z_mean[i]; }
+        for (int i = 0; i < visible_count; ++i) { int fi = order[i]; if (f_z_mean[fi] < zmin_all) zmin_all = f_z_mean[fi]; if (f_z_mean[fi] > zmax_all) zmax_all = f_z_mean[fi]; }
         if (zmax_all == zmin_all) {
-            // all equal, leave identity order (but stable tie-break)
-            for (int i = 0; i < face_count; ++i) order[i] = i;
+            // all equal, keep identity order (stable tie-break is already in order[0..visible_count-1])
         } else {
             int *counts = (int*)calloc(buckets, sizeof(int));
-            int *temp = (int*)malloc(sizeof(int) * face_count);
+            int *temp = (int*)malloc(sizeof(int) * visible_count);
             // bucket indices (counts)
-            for (int i = 0; i < face_count; ++i) {
-                int idx = (int)((f_z_mean[i] - zmin_all) / (zmax_all - zmin_all) * (buckets - 1));
+            for (int i = 0; i < visible_count; ++i) {
+                int fi = order[i];
+                int idx = (int)((f_z_mean[fi] - zmin_all) / (zmax_all - zmin_all) * (buckets - 1));
                 if (idx < 0) idx = 0; if (idx >= buckets) idx = buckets - 1;
                 counts[idx]++;
             }
@@ -1297,13 +1342,14 @@ void painter_newell_sancha_float(Model3D* model, int face_count) {
             int *starts = (int*)malloc(sizeof(int) * buckets);
             int acc = 0;
             for (int b = 0; b < buckets; ++b) { starts[b] = acc; acc += counts[b]; }
-            // place items into temp according to starts
+            // place items into temp according to starts (use face indices)
             int *pos_in_bucket = (int*)malloc(sizeof(int) * buckets);
             for (int b = 0; b < buckets; ++b) pos_in_bucket[b] = starts[b];
-            for (int i = 0; i < face_count; ++i) {
-                int idx = (int)((f_z_mean[i] - zmin_all) / (zmax_all - zmin_all) * (buckets - 1));
+            for (int i = 0; i < visible_count; ++i) {
+                int fi = order[i];
+                int idx = (int)((f_z_mean[fi] - zmin_all) / (zmax_all - zmin_all) * (buckets - 1));
                 if (idx < 0) idx = 0; if (idx >= buckets) idx = buckets - 1;
-                temp[pos_in_bucket[idx]++] = i;
+                temp[pos_in_bucket[idx]++] = fi;
             }
             // flatten buckets from high to low into order (descending z_mean)
             int pos = 0;
@@ -1321,7 +1367,7 @@ void painter_newell_sancha_float(Model3D* model, int face_count) {
     int swapped_local = 0;
     do {
         swapped_local = 0;
-        for (int i = 0; i < face_count - 1; ++i) {
+        for (int i = 0; i < visible_count - 1; ++i) {
             int f1 = order[i], f2 = order[i+1];
             /* linear check against ordered_pairs array */
             int already_ordered = 0;
@@ -1478,8 +1524,15 @@ void painter_newell_sancha_float(Model3D* model, int face_count) {
         } // end for
     } while (swapped_local);
 
-    // write back order to faces->sorted_face_indices
-    for (int i = 0; i < face_count; ++i) faces->sorted_face_indices[i] = order[i];
+    // write back order to faces->sorted_face_indices (visible faces first)
+    int tail = 0;
+    for (int i = 0; i < visible_count; ++i) faces->sorted_face_indices[tail++] = order[i];
+    // append culled faces to fill rest (if culling active)
+    if (cull_back_faces) {
+        for (int i = 0; i < face_count; ++i) if (!f_display[i]) faces->sorted_face_indices[tail++] = i;
+    } else {
+        for (int i = visible_count; i < face_count; ++i) faces->sorted_face_indices[tail++] = order[i];
+    }
 
     if (ordered_pairs) free(ordered_pairs);
 
@@ -3619,9 +3672,10 @@ case 98:  // 'b'
                 printf("Back-face culling: %s\n", cull_back_faces ? "ON" : "OFF");
                 if (model != NULL) {
                     printf("Reprocessing model with culling %s...\n", cull_back_faces ? "ON" : "OFF");
-                    processModelFast(model, &params, filename);
+                    //processModelFast(model, &params, filename);
+                    goto bigloop;
                 }
-                goto loopReDraw;
+                //goto loopReDraw;
 
             case 69:  // 'E' - dump face equations to equ.csv
             case 101: // 'e'
