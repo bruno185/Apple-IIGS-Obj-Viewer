@@ -1,0 +1,16 @@
+#!/bin/sh
+# Example post-commit hook to append commit info to session_context.md
+# Copy to .git/hooks/post-commit and make executable to enable.
+
+LAST_MSG=$(git log -1 --pretty=%B)
+# Skip auto-updates created by this hook
+case "$LAST_MSG" in *"[session context]"*) exit 0 ;; esac
+
+DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+INFO=$(git log -1 --pretty=format:"%h | %an | %s")
+echo "$DATE | $INFO" >> session_context.md
+git add session_context.md
+# Commit with an identifiable message so the hook skips it next time
+GIT_COMMIT_MESSAGE="[session context] auto-update: $INFO"
+# Use git commit-tree to avoid triggering hooks recursively or set an env var
+git commit -m "$GIT_COMMIT_MESSAGE"

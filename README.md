@@ -68,3 +68,21 @@ This project reads simplified OBJ files (vertices `v` and faces `f`), performs 3
 ---
 
 If you'd like a more detailed build guide, tests, or a license added, say so and I'll add it.
+
+## Session context (assistant) 🔁
+
+This repository includes a small workflow to keep short session summaries between interactive sessions with the assistant:
+
+- `session_context.md` — line-based session log at the repo root.
+- `scripts/update_session_context.py` — interactive helper to append an entry and commit it (Python; run `python scripts/update_session_context.py`).
+- `scripts/hooks/post_commit.py` — Python helper which appends the last commit info to `session_context.md` (invoked by the installed hook wrapper).
+- `scripts/install_git_hook.py` — helper to copy the example hook wrapper into your `.git/hooks` directory.
+- `scripts/validate_scripts.py` — quick validator for the repository helper scripts (syntax check).
+
+Usage:
+- Manual: run `python scripts/update_session_context.py --message "Short summary"` or simply `python scripts/update_session_context.py` and follow prompts.
+- Hook: run `python scripts/install_git_hook.py` to install the example hook wrapper. **Warning:** the example hook auto-commits `session_context.md`; if you have CI triggered on every commit prefer the manual script or add guard logic.
+
+Security: do not store passwords, tokens, or other secrets in `session_context.md`.
+
+If you'd like, I can open a PR with these files and add additional guard checks to the hook (skip when CI env var detected).
