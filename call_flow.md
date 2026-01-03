@@ -22,12 +22,12 @@
 
 - 🔧 **`getObserverParams(&params, model)`** — interactive parameter parsing
   - reads angles H/V/W and screen rotation
-  - If user presses ENTER for distance: **auto-fit path**
-    - 🔧 **`fitModelToView(model, params, target_max_dim, margin, percentile, center_flag)`** — fits model using sampled radii
-      - sample vertices (up to `max_samples`) to compute centroid + squared radii
-      - quickselect percentile radius → compute scale and center
-      - update `model->auto_scale`, `auto_center_*`, `auto_scaled`
-      - update model bounding sphere (`bs_cx/bs_cy/bs_cz/bs_r`) accordingly — now kept in sync **O(1)**
+  - If user presses ENTER for distance: **auto-fit path (removed)**
+    - 🔧 **`fitModelToView(model, params, target_max_dim, margin, percentile, center_flag)`** — *archived (removed from `GS3Dp.cc`); implementation copied to `chutier.txt`; runtime auto-fit is disabled*
+      - sample vertices (up to `max_samples`) to compute centroid + squared radii (archived behavior)
+      - quickselect percentile radius → compute scale and center (archived behavior)
+      - used to update `model->auto_scale`, `auto_center_*`, `auto_scaled` (archived)
+      - previously updated model bounding sphere (`bs_cx/bs_cy/bs_cz/bs_r`) accordingly — now kept in sync **O(1)** when applied manually
       - Distance estimation is disabled here; `params->distance` must be set explicitly by the user
       - **FALLBACK:** none — per-vertex auto-fit removed
   - else: set `params->distance` from user input
@@ -40,7 +40,7 @@
   - 🔧 **`processModelFast(model, &params, filename)`** — runs every frame; ultra-fast transformation + projection
     - precompute trig products (Fixed32)
     - For each vertex (tight Fixed32 loop): transform → compute `xo/yo/zo` → project to `x2d/y2d`
-    - **Note:** runtime auto-fit is *not* applied inside `processModelFast` — any autoscale is applied ahead of time by 🔧 **`fitModelToView()`**, which modifies model coordinates and updates the bounding sphere; `processModelFast` operates on those (possibly scaled) model vertices.
+    - **Note:** runtime auto-fit is *not* applied inside `processModelFast` — any autoscale must be applied ahead of time; the previous helper `fitModelToView()` has been removed and archived to `chutier.txt`. `processModelFast` operates on already-scaled model vertices.
     - 🔧 **`calculateFaceDepths()`** — compute per-face `z_min/z_max/z_mean`, display flags, planar coefficients (Newell). Optionally performs observer-space back-face culling (plane D <= 0) when the `B` toggle is enabled.
     - 🔧 **`painter_newell_sancha()`** — sort faces by depth and correct ambiguous order (qsort + corrections). When back-face culling is enabled, the painter builds and sorts a list limited to faces with `display_flag == 1` (visible faces), performs order corrections only on that sub-list for efficiency and correctness, and appends culled faces afterward to preserve `sorted_face_indices` stability.
       - Collects *inconclusive pairs* (pairs of faces where order is ambiguous) into an **in-memory buffer** for later inspection; note: the buffer `inconclusive_pairs` is now a global buffer (preallocated for performance) used by diagnostic and framing helpers.
@@ -48,7 +48,7 @@
     - 🔧 **`processModelWireframe(model, &params, filename)`** — lightweight wireframe processing: transforms and projects vertices and sets face visibility only (no per-face depth/sorting); used for wireframe/frame-only display to improve speed.
 
 - 🔧 **`drawPolygons(model, faces, face_count, vert_count)`** — render loop
-  - uses sorted faces; for each face builds QuickDraw polygon from `vtx->x2d/y2d` (these already reflect any model-space auto-scaling applied by `fitModelToView`). When back-face culling is active, `faces->sorted_face_indices` contains visible faces first (sorted) followed by culled faces; `drawPolygons` still checks `display_flag` and skips any face with `display_flag == 0` at draw time.
+  - uses sorted faces; for each face builds QuickDraw polygon from `vtx->x2d/y2d` (these already reflect any model-space auto-scaling applied ahead of time; auto-fit is disabled — archived implementation is in `chutier.txt`). When back-face culling is active, `faces->sorted_face_indices` contains visible faces first (sorted) followed by culled faces; `drawPolygons` still checks `display_flag` and skips any face with `display_flag == 0` at draw time.
   - Fill + Frame polygon (QuickDraw)
   - There is also a helper `frameInconclusivePairs()` that can frame (in white) polygons listed in the `inconclusive_pairs` buffer for debugging/diagnostic display.
 
@@ -57,7 +57,7 @@
 - `startgraph()` / render / `endgraph()` / `DoText()` / optional `DoColor()`
 - Keys: Space (info), N (new model), Arrows / A Z (angles/distance), `K` (edit angles/distance without reloading model), `+`/`-` (adjust autoscale), `B` (toggle back-face culling: observer-space d<=0 test)
 - `K` invokes `getObserverParams(&params, model)` interactively and applies new angles/distance without requiring a reload.
-- `+`/`-` behavior: if the model is not yet auto-scaled, these keys first perform an **auto-fit** (`fitModelToView()`); they then increase or decrease the current `params->distance` and update `model->auto_scale`. Automatic recomputation via bounding-sphere is disabled; distance adjustments are manual. The action prints a short message (e.g., "Distance increased" / "Distance decreased").
+- `+`/`-` behavior: if the model is not yet auto-scaled, these keys previously performed an **auto-fit** via `fitModelToView()`; auto-fit has been disabled (see `chutier.txt` for the archived implementation). They now only increase or decrease the current `params->distance` and update `model->auto_scale`. Automatic recomputation via bounding-sphere is disabled; distance adjustments are manual. The action prints a short message (e.g., "Distance increased" / "Distance decreased").
 
 ---
 
@@ -104,7 +104,7 @@
 - 🔧 `void frameInconclusivePairs(Model3D* model)` — `GS3Dp.cc:3163`
 
 ### Utilities / Helpers
-- 🔧 `void fitModelToView(Model3D* model, ObserverParams* params, float target_max_dim, float margin, float percentile, int center_flag)` — `GS3Dp.cc:2874`
+- 🔧 `void fitModelToView(Model3D* model, ObserverParams* params, float target_max_dim, float margin, float percentile, int center_flag)` — **removed from `GS3Dp.cc`; implementation archived in `chutier.txt`**
 - 🔧 `void dumpFaceEquationsCSV(Model3D* model, const char* csv_filename, int alt_format)` — `GS3Dp.cc:2751`
 - 🔧 `void getObserverParams(ObserverParams* params, Model3D* model)` — `GS3Dp.cc:1999`
 - 🔧 `void compute2DFromObserver(Model3D* model, int angle_w)` — `GS3Dp.cc:3262`
