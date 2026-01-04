@@ -1,4 +1,4 @@
-/* painter_newell_sanchaV3 - copied from GS3Dp.cc */
+/* OLD CODE from GS3Dp.cc */
 
 
 /* Archived: fitModelToView (removed from GS3Dp.cc)
