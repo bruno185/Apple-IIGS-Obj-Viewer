@@ -761,9 +761,9 @@ void painter_newell_sancha_fast(Model3D* model, int face_count) {
 
 void debug_two_faces(Model3D* model, int f1, int f2) {
     startgraph(mode);
-    drawFace(model, f1);
+    drawFace(model, f1, 10, 1);
     keypress();
-    drawFace(model, f2);
+    drawFace(model, f2, 10, 1);
     keypress();
     endgraph();
     DoText();
@@ -1644,6 +1644,375 @@ void painter_newell_sancha_float(Model3D* model, int face_count) {
 
     // Note: buffers are reused across invocations to avoid malloc/free overhead
     // (they are intentionally not freed here)
+}
+
+/* Helper: pairwise ordering decision using tests 1..7 from painter_newell_sancha
+ * Returns:
+ *  -1 if f1 is (conclusively) before f2
+ *   1 if f1 is (conclusively) after f2
+ *   0 if inconclusive
+ */
+static int face_order_relation(Model3D* model, int f1, int f2) {
+    if (!model) return 0;
+    FaceArrays3D* faces = &model->faces;
+    VertexArrays3D* vtx = &model->vertices;
+    Fixed32 epsilon = FLOAT_TO_FIXED(0.01f);
+
+    // Test 1: depth separation
+    if (faces->z_max[f2] <= faces->z_min[f1]) return -1; // f1 before f2
+    if (faces->z_max[f1] <= faces->z_min[f2]) return 1;  // f1 after f2
+
+    // Test 2/3: bbox separation -> treat as before (no swap)
+    int minx1 = faces->minx[f1], maxx1 = faces->maxx[f1], miny1 = faces->miny[f1], maxy1 = faces->maxy[f1];
+    int minx2 = faces->minx[f2], maxx2 = faces->maxx[f2], miny2 = faces->miny[f2], maxy2 = faces->maxy[f2];
+    if (maxx1 <= minx2 || maxx2 <= minx1) return -1;
+    if (maxy1 <= miny2 || maxy2 <= miny1) return -1;
+
+    // Plane-based tests 4..7 (copying logic from painter)
+    int n1 = faces->vertex_count[f1];
+    int n2 = faces->vertex_count[f2];
+    int offset1 = faces->vertex_indices_ptr[f1];
+    int offset2 = faces->vertex_indices_ptr[f2];
+    int k;
+    Fixed64 a1 = faces->plane_a[f1]; Fixed64 b1 = faces->plane_b[f1]; Fixed64 c1 = faces->plane_c[f1]; Fixed64 d1 = faces->plane_d[f1];
+    Fixed64 a2 = faces->plane_a[f2]; Fixed64 b2 = faces->plane_b[f2]; Fixed64 c2 = faces->plane_c[f2]; Fixed64 d2 = faces->plane_d[f2];
+
+    int obs_side1 = 0; int obs_side2 = 0; int side; int all_same_side; int all_opposite_side;
+
+    // Test 4
+    obs_side1 = 0; if (d1 > (Fixed64)epsilon) obs_side1 = 1; else if (d1 < -(Fixed64)epsilon) obs_side1 = -1; else goto skipT4;
+    all_same_side = 1;
+    for (k=0; k<n2; k++) {
+        int v = faces->vertex_indices_buffer[offset2+k]-1;
+        Fixed64 acc = 0;
+        acc  = (((Fixed64)a1 * (Fixed64)vtx->xo[v]) >> FIXED_SHIFT);
+        acc += (((Fixed64)b1 * (Fixed64)vtx->yo[v]) >> FIXED_SHIFT);
+        acc += (((Fixed64)c1 * (Fixed64)vtx->zo[v]) >> FIXED_SHIFT);
+        acc += (Fixed64)d1;
+        if  (acc > (Fixed64)epsilon) side = 1; else if (acc < -(Fixed64)epsilon) side = -1; else continue;
+        if (obs_side1 != side) { all_same_side = 0; break; }
+    }
+    if (all_same_side) return -1;
+    skipT4: ;
+
+    // Test 5
+    obs_side2 = 0; if (d2 > (Fixed64)epsilon) obs_side2 = 1; else if (d2 < -(Fixed64)epsilon) obs_side2 = -1; else goto skipT5;
+    all_opposite_side = 1;
+    for (k=0; k<n1; k++) {
+        int v = faces->vertex_indices_buffer[offset1+k]-1;
+        Fixed64 acc = 0;
+        acc  = (((Fixed64)a2 * (Fixed64)vtx->xo[v]) >> FIXED_SHIFT);
+        acc += (((Fixed64)b2 * (Fixed64)vtx->yo[v]) >> FIXED_SHIFT);
+        acc += (((Fixed64)c2 * (Fixed64)vtx->zo[v]) >> FIXED_SHIFT);
+        acc += (Fixed64)d2;
+        if  (acc > (Fixed64)epsilon) side = 1; else if (acc < -(Fixed64)epsilon) side = -1; else continue;
+        if (obs_side2 == side) { all_opposite_side = 0; break; }
+    }
+    if (all_opposite_side) return -1;
+    skipT5: ;
+
+    // Test 6
+    obs_side1 = 0; if (d1 > (Fixed64)epsilon) obs_side1 = 1; else if (d1 < -(Fixed64)epsilon) obs_side1 = -1; else goto skipT6;
+    all_opposite_side = 1;
+    for (k=0; k<n2; k++) {
+        int v = faces->vertex_indices_buffer[offset2+k]-1;
+        Fixed64 acc = 0;
+        acc  = (((Fixed64)a1 * (Fixed64)vtx->xo[v]) >> FIXED_SHIFT);
+        acc += (((Fixed64)b1 * (Fixed64)vtx->yo[v]) >> FIXED_SHIFT);
+        acc += (((Fixed64)c1 * (Fixed64)vtx->zo[v]) >> FIXED_SHIFT);
+        acc += (Fixed64)d1;
+        if (acc > (Fixed64)epsilon) side = 1; else if (acc < -(Fixed64)epsilon) side = -1; else continue;
+        if (obs_side1 == side) { all_opposite_side = 0; break; }
+    }
+    if (all_opposite_side) return 1; // swap -> f1 should be after f2
+    skipT6: ;
+
+    // Test 7
+    obs_side2 = 0; if (d2 > (Fixed64)epsilon) obs_side2 = 1; else if (d2 < -(Fixed64)epsilon) obs_side2 = -1; else goto skipT7;
+    all_same_side = 1;
+    for (k=0; k<n1; k++) {
+        int v = faces->vertex_indices_buffer[offset1+k]-1;
+        Fixed64 acc = 0;
+        acc  = (((Fixed64)a2 * (Fixed64)vtx->xo[v]) >> FIXED_SHIFT);
+        acc += (((Fixed64)b2 * (Fixed64)vtx->yo[v]) >> FIXED_SHIFT);
+        acc += (((Fixed64)c2 * (Fixed64)vtx->zo[v]) >> FIXED_SHIFT);
+        acc += (Fixed64)d2;
+        if (acc > (Fixed64)epsilon) side = 1; else if (acc < -(Fixed64)epsilon) side = -1; else continue;
+        if (obs_side2 != side) { all_same_side = 0; break; }
+    }
+    if (all_same_side) return 1;
+    skipT7: ;
+
+    // Non-conclusive
+    return 0;
+}
+
+/* Evaluate tests 1..7 individually for a pair (f1, f2).
+ * out[0]..out[6] will be filled with:
+ *   -1 => test concludes f1 is before f2
+ *    1 => test concludes f1 is after f2
+ *    0 => test inconclusive
+ */
+static void evaluate_pair_tests(Model3D* model, int f1, int f2, int out[7]) {
+    FaceArrays3D* faces = &model->faces;
+    VertexArrays3D* vtx = &model->vertices;
+    Fixed32 epsilon = FLOAT_TO_FIXED(0.01f);
+    int k;
+
+    for (k = 0; k < 7; ++k) out[k] = 0;
+
+    // Test 1: depth separation
+    if (faces->z_max[f2] <= faces->z_min[f1]) out[0] = -1;
+    else if (faces->z_max[f1] <= faces->z_min[f2]) out[0] = 1;
+
+    // Test 2: X bbox separation
+    {
+        int minx1 = faces->minx[f1], maxx1 = faces->maxx[f1], minx2 = faces->minx[f2], maxx2 = faces->maxx[f2];
+        if (maxx1 <= minx2 || maxx2 <= minx1) out[1] = -1;
+    }
+
+    // Test 3: Y bbox separation
+    {
+        int miny1 = faces->miny[f1], maxy1 = faces->maxy[f1], miny2 = faces->miny[f2], maxy2 = faces->maxy[f2];
+        if (maxy1 <= miny2 || maxy2 <= miny1) out[2] = -1;
+    }
+
+    // Plane-based tests 4..7
+    int n1 = faces->vertex_count[f1];
+    int n2 = faces->vertex_count[f2];
+    int offset1 = faces->vertex_indices_ptr[f1];
+    int offset2 = faces->vertex_indices_ptr[f2];
+    Fixed64 a1 = faces->plane_a[f1]; Fixed64 b1 = faces->plane_b[f1]; Fixed64 c1 = faces->plane_c[f1]; Fixed64 d1 = faces->plane_d[f1];
+    Fixed64 a2 = faces->plane_a[f2]; Fixed64 b2 = faces->plane_b[f2]; Fixed64 c2 = faces->plane_c[f2]; Fixed64 d2 = faces->plane_d[f2];
+    int obs_side1 = 0; int obs_side2 = 0; int side; int all_same_side; int all_opposite_side;
+
+    // Test 4
+    obs_side1 = 0; if (d1 > (Fixed64)epsilon) obs_side1 = 1; else if (d1 < -(Fixed64)epsilon) obs_side1 = -1; else obs_side1 = 0;
+    if (obs_side1 != 0) {
+        all_same_side = 1;
+        for (k = 0; k < n2; ++k) {
+            int v = faces->vertex_indices_buffer[offset2+k]-1;
+            Fixed64 acc = 0;
+            acc  = (((Fixed64)a1 * (Fixed64)vtx->xo[v]) >> FIXED_SHIFT);
+            acc += (((Fixed64)b1 * (Fixed64)vtx->yo[v]) >> FIXED_SHIFT);
+            acc += (((Fixed64)c1 * (Fixed64)vtx->zo[v]) >> FIXED_SHIFT);
+            acc += (Fixed64)d1;
+            if (acc > (Fixed64)epsilon) side = 1; else if (acc < -(Fixed64)epsilon) side = -1; else continue;
+            if (obs_side1 != side) { all_same_side = 0; break; }
+        }
+        if (all_same_side) out[3] = -1; else out[3] = 0;
+    } else out[3] = 0;
+
+    // Test 5
+    obs_side2 = 0; if (d2 > (Fixed64)epsilon) obs_side2 = 1; else if (d2 < -(Fixed64)epsilon) obs_side2 = -1; else obs_side2 = 0;
+    if (obs_side2 != 0) {
+        all_opposite_side = 1;
+        for (k = 0; k < n1; ++k) {
+            int v = faces->vertex_indices_buffer[offset1+k]-1;
+            Fixed64 acc = 0;
+            acc  = (((Fixed64)a2 * (Fixed64)vtx->xo[v]) >> FIXED_SHIFT);
+            acc += (((Fixed64)b2 * (Fixed64)vtx->yo[v]) >> FIXED_SHIFT);
+            acc += (((Fixed64)c2 * (Fixed64)vtx->zo[v]) >> FIXED_SHIFT);
+            acc += (Fixed64)d2;
+            if (acc > (Fixed64)epsilon) side = 1; else if (acc < -(Fixed64)epsilon) side = -1; else continue;
+            if (obs_side2 == side) { all_opposite_side = 0; break; }
+        }
+        if (all_opposite_side) out[4] = -1; else out[4] = 0;
+    } else out[4] = 0;
+
+    // Test 6
+    obs_side1 = 0; if (d1 > (Fixed64)epsilon) obs_side1 = 1; else if (d1 < -(Fixed64)epsilon) obs_side1 = -1; else obs_side1 = 0;
+    if (obs_side1 != 0) {
+        all_opposite_side = 1;
+        for (k = 0; k < n2; ++k) {
+            int v = faces->vertex_indices_buffer[offset2+k]-1;
+            Fixed64 acc = 0;
+            acc  = (((Fixed64)a1 * (Fixed64)vtx->xo[v]) >> FIXED_SHIFT);
+            acc += (((Fixed64)b1 * (Fixed64)vtx->yo[v]) >> FIXED_SHIFT);
+            acc += (((Fixed64)c1 * (Fixed64)vtx->zo[v]) >> FIXED_SHIFT);
+            acc += (Fixed64)d1;
+            if (acc > (Fixed64)epsilon) side = 1; else if (acc < -(Fixed64)epsilon) side = -1; else continue;
+            if (obs_side1 == side) { all_opposite_side = 0; break; }
+        }
+        if (all_opposite_side) out[5] = 1; else out[5] = 0;
+    } else out[5] = 0;
+
+    // Test 7
+    obs_side2 = 0; if (d2 > (Fixed64)epsilon) obs_side2 = 1; else if (d2 < -(Fixed64)epsilon) obs_side2 = -1; else obs_side2 = 0;
+    if (obs_side2 != 0) {
+        all_same_side = 1;
+        for (k = 0; k < n1; ++k) {
+            int v = faces->vertex_indices_buffer[offset1+k]-1;
+            Fixed64 acc = 0;
+            acc  = (((Fixed64)a2 * (Fixed64)vtx->xo[v]) >> FIXED_SHIFT);
+            acc += (((Fixed64)b2 * (Fixed64)vtx->yo[v]) >> FIXED_SHIFT);
+            acc += (((Fixed64)c2 * (Fixed64)vtx->zo[v]) >> FIXED_SHIFT);
+            acc += (Fixed64)d2;
+            if (acc > (Fixed64)epsilon) side = 1; else if (acc < -(Fixed64)epsilon) side = -1; else continue;
+            if (obs_side2 != side) { all_same_side = 0; break; }
+        }
+        if (all_same_side) out[6] = 1; else out[6] = 0;
+    } else out[6] = 0;
+}
+
+/* Interactive helper: ask user for a face id, then check all faces before it in the
+ * sorted list and report those that (by tests) should be behind the selected face.
+ * Allows user to preview wireframe containing only the misplaced faces.
+ */
+void inspect_face_order(Model3D* model, ObserverParams* params, const char* filename) {
+    if (!model || !params) return;
+    FaceArrays3D* faces = &model->faces;
+    int face_count = faces->face_count;
+    if (face_count <= 0) { printf("No faces in model\n"); return; }
+
+    // Ensure back-face culling on and recompute depths & ordering
+    int old_cull = cull_back_faces;
+    cull_back_faces = 1;
+    // processModelFast(model, params, filename);
+    painter_newell_sancha(model, face_count);
+
+    // Prompt user for face id
+    printf("Enter face id (0..%d) to inspect: ", face_count - 1);
+    int sel = -1;
+    if (scanf("%d", &sel) != 1) {
+        int ch; while ((ch = getchar()) != '\n' && ch != EOF) ;
+        printf("Input cancelled\n");
+        cull_back_faces = old_cull; return;
+    }
+    // Use the exact number provided by the user (do not convert 1-based to 0-based)
+    int target_face = sel;
+    if (target_face < 0 || target_face >= face_count) { printf("Invalid face id\n"); cull_back_faces = old_cull; return; }
+
+    // Find position of target_face in the sorted array
+    int pos = -1;
+    for (int i = 0; i < face_count; ++i) {
+        if (faces->sorted_face_indices[i] == target_face) { pos = i; break; }
+    }
+    if (pos < 0) { printf("Selected face is not in sorted list\n"); cull_back_faces = old_cull; return; }
+
+    // Check faces placed before the selected face
+    int* misplaced = (int*)malloc(face_count * sizeof(int));
+    int misplaced_count = 0;
+    for (int i = 0; i < pos; ++i) {
+        int f = faces->sorted_face_indices[i];
+        int rel = face_order_relation(model, f, target_face);
+        if (rel == 1) { // this face should be after target -> misplaced
+            misplaced[misplaced_count++] = f;
+        }
+    }
+
+    if (misplaced_count == 0) {
+        printf("No misplaced faces found relative to face %d\n", target_face);
+        printf("Press any key to continue\n");
+        keypress();
+        free(misplaced);
+        cull_back_faces = old_cull;
+        return;
+    }
+
+    printf("Misplaced faces relative to %d: %d\n", target_face, misplaced_count);
+    for (int i = 0; i < misplaced_count; ++i) printf("  %d\n", misplaced[i]);
+
+    // For each misplaced face, evaluate tests 1..7 and display which succeeded/failed/inconclusive
+    for (int mi = 0; mi < misplaced_count; ++mi) {
+        int f = misplaced[mi];
+        int tests[7];
+        evaluate_pair_tests(model, f, target_face, tests);
+
+        // Build readable lists
+        char passed[128]; passed[0] = '\0';
+        char failed[128]; failed[0] = '\0';
+        char incon[128]; incon[0] = '\0';
+        int pcount = 0, fcount = 0, icount = 0;
+        for (int t = 0; t < 7; ++t) {
+            if (tests[t] == 1) {
+                if (pcount) strncat(passed, ",", sizeof(passed)-strlen(passed)-1);
+                char tmp[8]; snprintf(tmp, sizeof(tmp), "%d", t+1); strncat(passed, tmp, sizeof(passed)-strlen(passed)-1); pcount++;
+            } else if (tests[t] == -1) {
+                if (fcount) strncat(failed, ",", sizeof(failed)-strlen(failed)-1);
+                char tmp[8]; snprintf(tmp, sizeof(tmp), "%d", t+1); strncat(failed, tmp, sizeof(failed)-strlen(failed)-1); fcount++;
+            } else {
+                if (icount) strncat(incon, ",", sizeof(incon)-strlen(incon)-1);
+                char tmp[8]; snprintf(tmp, sizeof(tmp), "%d", t+1); strncat(incon, tmp, sizeof(incon)-strlen(incon)-1); icount++;
+            }
+        }
+        if (pcount == 0) strncpy(passed, "(none)", sizeof(passed));
+        if (fcount == 0) strncpy(failed, "(none)", sizeof(failed));
+        if (icount == 0) strncpy(incon, "(none)", sizeof(incon));
+
+        char after_list[64]; after_list[0] = '\0';
+        char before_list[64]; before_list[0] = '\0';
+        char incon_list[64]; incon_list[0] = '\0';
+        int after_count = 0, before_count = 0, incon_count = 0;
+        for (int t = 0; t < 7; ++t) {
+            if (tests[t] == 1) {
+                if (after_count) strncat(after_list, ",", sizeof(after_list)-strlen(after_list)-1);
+                char tmp[8]; snprintf(tmp, sizeof(tmp), "%d", t+1); strncat(after_list, tmp, sizeof(after_list)-strlen(after_list)-1);
+                after_count++; 
+            } else if (tests[t] == -1) {
+                if (before_count) strncat(before_list, ",", sizeof(before_list)-strlen(before_list)-1);
+                char tmp[8]; snprintf(tmp, sizeof(tmp), "%d", t+1); strncat(before_list, tmp, sizeof(before_list)-strlen(before_list)-1);
+                before_count++;
+            } else {
+                if (incon_count) strncat(incon_list, ",", sizeof(incon_list)-strlen(incon_list)-1);
+                char tmp[8]; snprintf(tmp, sizeof(tmp), "%d", t+1); strncat(incon_list, tmp, sizeof(incon_list)-strlen(incon_list)-1);
+                incon_count++;
+            }
+        }
+
+        // Compact grouped output (single-line)
+        if (before_count == 0) strncpy(before_list, "(none)", sizeof(before_list));
+        if (after_count == 0) strncpy(after_list, "(none)", sizeof(after_list));
+        if (incon_count == 0) strncpy(incon_list, "(none)", sizeof(incon_list));
+
+        printf("Face %d: BEFORE tests: %s; AFTER tests: %s; inconclusive: %s\n", f, before_list, after_list, incon_list);
+
+        // Conclusion lines (keep existing style)
+        if (after_count == 0 && before_count == 0) {
+            printf("  Overall: inconclusive (no decisive tests)\n");
+        } else {
+            if (after_count) printf("Concluded: Face %d (selected) should be AFTER face %d (tests: %s)\n", target_face, f, after_list);
+            if (before_count) printf("Concluded: Face %d (selected) should be BEFORE face %d (tests: %s)\n", target_face, f, before_list);
+        }
+    }
+
+    printf("\nPress any key to preview: full wireframe, then highlight selected and misplaced faces (ESC to cancel)\n");
+    keypress();
+    startgraph(mode);
+
+    // Backup display flags
+    unsigned char* backup_flags = (unsigned char*)malloc(faces->face_count);
+    for (int i = 0; i < faces->face_count; ++i) backup_flags[i] = faces->display_flag[i];
+
+    // 1) Show entire model in wireframe
+    int old_frame = framePolyOnly;
+    framePolyOnly = 1; // wireframe
+    processModelWireframe(model, params, filename);
+    drawPolygons(model, faces->vertex_count, faces->face_count, model->vertices.vertex_count);
+
+    // 2) Overlay: selected face in green (pen 10)
+    // Ensure target face is visible for drawFace
+    faces->display_flag[target_face] = 1;
+    drawFace(model, target_face, 10, 1);
+
+    // 3) Overlay misplaced faces in orange (pen 6)
+    for (int i = 0; i < misplaced_count; ++i) {
+        int f = misplaced[i];
+        faces->display_flag[f] = 1;
+        drawFace(model, f, 6, 0);
+    }
+
+    MoveTo(5, 190);
+    printf("Press any key to return\n");
+    keypress();
+    endgraph();
+
+    // Restore state
+    framePolyOnly = old_frame;
+    for (int i = 0; i < faces->face_count; ++i) faces->display_flag[i] = backup_flags[i];
+    free(backup_flags);
+    free(misplaced);
+    cull_back_faces = old_cull;
 }
 
     // UTILITY FUNCTIONS...
@@ -2998,7 +3367,7 @@ void dumpFaceEquationsCSV(Model3D* model, const char* csv_filename, int alt_form
 // - respects face validity and display_flag
 // - uses globalPolyHandle and poly_handle_locked like drawPolygons
 // - honors framePolyOnly for frame-only rendering
-void drawFace(Model3D* model, int face_id) {
+void drawFace(Model3D* model, int face_id, int fillPenPat, int show_index) {
     if (!model) return;
     FaceArrays3D* faces = &model->faces;
     VertexArrays3D* vtx = &model->vertices;
@@ -3073,7 +3442,15 @@ void drawFace(Model3D* model, int face_id) {
     if (sc_max_x < 0 || sc_min_x >= screenW || sc_max_y < 0 || sc_min_y >= screenH) {
         // Off-screen; nothing to draw
     } else {
-        if (framePolyOnly) {
+        if (fillPenPat >= 0) {
+            SetSolidPenPat(fillPenPat);
+            Pattern pat;
+            GetPenPat(pat);
+            FillPoly(polyHandle, pat);
+            SetSolidPenPat(7);
+            FramePoly(polyHandle);
+            SetSolidPenPat(14);
+        } else if (framePolyOnly) {
             SetSolidPenPat(7);
             FramePoly(polyHandle);
             SetSolidPenPat(14);
@@ -3087,20 +3464,22 @@ void drawFace(Model3D* model, int face_id) {
         }
 
         // Draw face index centered in the polygon using QuickDraw MoveTo + DrawString
-        int center_x = (min_x + max_x) / 2;
-        int center_y = (min_y + max_y) / 2;
-        int screenCx = screenScale * center_x; // horizontal is scaled
-        int screenCy = center_y;              // vertical not scaled in this codebase
+        if (show_index) {
+            int center_x = (min_x + max_x) / 2;
+            int center_y = (min_y + max_y) / 2;
+            int screenCx = screenScale * center_x; // horizontal is scaled
+            int screenCy = center_y;              // vertical not scaled in this codebase
 
-        char tmp[32];
-        int len = snprintf(tmp, sizeof(tmp), "%d", face_id);
-        if (len > 15) len = 15; // fit into Pascal string buffer
-        unsigned char pstr[16];
-        pstr[0] = (unsigned char)len;
-        memcpy(&pstr[1], tmp, len);
+            char tmp[32];
+            int len = snprintf(tmp, sizeof(tmp), "%d", face_id);
+            if (len > 15) len = 15; // fit into Pascal string buffer
+            unsigned char pstr[16];
+            pstr[0] = (unsigned char)len;
+            memcpy(&pstr[1], tmp, len);
 
-        MoveTo(screenCx, screenCy);
-        DrawString(pstr);
+            MoveTo(screenCx, screenCy);
+            DrawString(pstr);
+        }
     }
 }
 
@@ -3729,6 +4108,12 @@ void DoText() {
                 show_inconclusive ^= 1;
                 printf("Inconclusive pairs display: %s\n", show_inconclusive ? "ON" : "OFF");
                 goto loopReDraw;
+
+            case 68:  // 'D' - inspect face ordering and show misplaced faces
+            case 100: // 'd'
+                if (model == NULL) { printf("No model loaded\n"); goto loopReDraw; }
+                inspect_face_order(model, &params, filename);
+                goto bigloop;
 
 case 70:  // 'F' - cycle painter mode: fast -> normal -> float
 case 102: // 'f'
