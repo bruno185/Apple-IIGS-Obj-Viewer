@@ -1643,7 +1643,7 @@ void painter_newell_sancha_float(Model3D* model, int face_count) {
     if (ordered_pairs) free(ordered_pairs);
 
     // Note: buffers are reused across invocations to avoid malloc/free overhead
-    // (they are intentionally not freed here)
+
 }
 
 /* Helper: pairwise ordering decision using tests 1..7 from painter_newell_sancha
@@ -1910,8 +1910,12 @@ void inspect_face_order(Model3D* model, ObserverParams* params, const char* file
         return;
     }
 
-    printf("Misplaced faces relative to %d: %d\n", target_face, misplaced_count);
-    for (int i = 0; i < misplaced_count; ++i) printf("  %d\n", misplaced[i]);
+    printf("==> %d misplaced faces relative to face %d : ", misplaced_count, target_face);
+    for (int i = 0; i < misplaced_count; ++i) {   
+        printf(" %d", misplaced[i]);
+        if (i < misplaced_count - 1) printf(",");
+    }
+    printf("\n\n");
 
     // For each misplaced face, evaluate tests 1..7 and display which succeeded/failed/inconclusive
     for (int mi = 0; mi < misplaced_count; ++mi) {
@@ -1971,8 +1975,8 @@ void inspect_face_order(Model3D* model, ObserverParams* params, const char* file
         if (after_count == 0 && before_count == 0) {
             printf("  Overall: inconclusive (no decisive tests)\n");
         } else {
-            if (after_count) printf("Concluded: Face %d (selected) should be AFTER face %d (tests: %s)\n", target_face, f, after_list);
-            if (before_count) printf("Concluded: Face %d (selected) should be BEFORE face %d (tests: %s)\n", target_face, f, before_list);
+            if (after_count) printf("Concluded: Face %d (selected) should be AFTER face %d (tests: %s)\n\n", target_face, f, after_list);
+            if (before_count) printf("Concluded: Face %d (selected) should be BEFORE face %d (tests: %s)\n\n", target_face, f, before_list);
         }
     }
 
@@ -2002,7 +2006,7 @@ void inspect_face_order(Model3D* model, ObserverParams* params, const char* file
         drawFace(model, f, 6, 0);
     }
 
-    MoveTo(5, 190);
+    MoveTo(5, 195);
     printf("Press any key to return\n");
     keypress();
     endgraph();
