@@ -100,7 +100,7 @@
 - 🔧 `void painter_newell_sancha_fast(Model3D* model, int face_count)` — `GS3Dp.cc:682`
 - 🔧 `void painter_newell_sancha_float(Model3D* model, int face_count)` — `GS3Dp.cc:1209`
 - 🔧 `void drawPolygons(Model3D* model, int* vertex_count, int face_count, int vertex_count_total)` — `GS3Dp.cc:3026`
-- 🔧 `void drawFace(Model3D* model, int face_id)` — `GS3Dp.cc:2918`
+- 🔧 `void drawFace(Model3D* model, int face_id, int fillPenPat, int show_index)` — `GS3Dp.cc:3198`
 - 🔧 `void frameInconclusivePairs(Model3D* model)` — `GS3Dp.cc:3163`
 
 ### Utilities / Helpers

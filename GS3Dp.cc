@@ -755,6 +755,7 @@ void painter_newell_sancha_fast(Model3D* model, int face_count) {
     qsort_faces_ptr_for_cmp = faces;
     qsort(faces->sorted_face_indices, visible_count, sizeof(int), cmp_faces_by_zmean);
     qsort_faces_ptr_for_cmp = NULL;
+
 }
 
 
@@ -1651,7 +1652,38 @@ void painter_newell_sancha_float(Model3D* model, int face_count) {
  *   1 if f1 is (conclusively) after f2
  *   0 if inconclusive
  */
-static int face_order_relation(Model3D* model, int f1, int f2) {
+/* prepare_inspector_sort
+ * ----------------------
+ * Purpose: prepare a model for interactive inspector runs.
+ * Behavior:
+ *  - Temporarily disables back-face culling so the painter sorts ALL faces
+ *    (including back faces). This ensures inspectors consider every face
+ *    regardless of the global `cull_back_faces` flag.
+ *  - Runs the painter sort (`painter_newell_sancha`) to compute `sorted_face_indices`
+ * Returns:
+ *  - previous `cull_back_faces` value (so callers can restore it)
+ */
+static int prepare_inspector_sort(Model3D* m, int fc) {
+    int old = cull_back_faces;
+    cull_back_faces = 0; /* inspector should include back faces */
+    painter_newell_sancha(m, fc);
+    return old;
+}
+
+/* pair_order_relation
+ * -------------------
+ * Purpose:
+ *  - Apply the same per-pair tests used by the painter (tests 1..7) to decide
+ *    whether two faces are conclusively ordered.
+ * Behavior / Return values:
+ *  - returns -1 if f1 is conclusively BEFORE f2
+ *  - returns  1 if f1 is conclusively AFTER f2
+ *  - returns  0 if inconclusive
+ * Notes:
+ *  - Uses depth (z_min/z_max), axis-aligned bbox separation (X/Y) and plane-based
+ *    vertex-side tests (observer-side checks) mirroring painter logic.
+ */
+static int pair_order_relation(Model3D* model, int f1, int f2) {
     if (!model) return 0;
     FaceArrays3D* faces = &model->faces;
     VertexArrays3D* vtx = &model->vertices;
@@ -1661,11 +1693,13 @@ static int face_order_relation(Model3D* model, int f1, int f2) {
     if (faces->z_max[f2] <= faces->z_min[f1]) return -1; // f1 before f2
     if (faces->z_max[f1] <= faces->z_min[f2]) return 1;  // f1 after f2
 
-    // Test 2/3: bbox separation -> treat as before (no swap)
+    // Test 2/3: bbox separation (symmetric)
     int minx1 = faces->minx[f1], maxx1 = faces->maxx[f1], miny1 = faces->miny[f1], maxy1 = faces->maxy[f1];
     int minx2 = faces->minx[f2], maxx2 = faces->maxx[f2], miny2 = faces->miny[f2], maxy2 = faces->maxy[f2];
-    if (maxx1 <= minx2 || maxx2 <= minx1) return -1;
-    if (maxy1 <= miny2 || maxy2 <= miny1) return -1;
+    if (maxx1 <= minx2) return -1; // f1 left of f2
+    if (maxx2 <= minx1) return 1;  // f1 right of f2
+    if (maxy1 <= miny2) return -1; // f1 below f2
+    if (maxy2 <= miny1) return 1;  // f1 above f2
 
     // Plane-based tests 4..7 (copying logic from painter)
     int n1 = faces->vertex_count[f1];
@@ -1854,21 +1888,27 @@ static void evaluate_pair_tests(Model3D* model, int f1, int f2, int out[7]) {
     } else out[6] = 0;
 }
 
-/* Interactive helper: ask user for a face id, then check all faces before it in the
- * sorted list and report those that (by tests) should be behind the selected face.
- * Allows user to preview wireframe containing only the misplaced faces.
+/* inspect_faces_before
+ * --------------------
+ * Purpose:
+ *  - Interactively inspect faces that are placed BEFORE a selected face in the
+ *    painter's ordered list but that the pairwise tests conclude should be AFTER.
+ * Behavior:
+ *  - Prompts the user for a face id, locates it in `sorted_face_indices` and checks
+ *    faces earlier in the ordered list using `pair_order_relation` and `evaluate_pair_tests`.
+ *  - Prints a compact per-face diagnostic and offers a wireframe preview with the
+ *    selected face highlighted (green) and misplaced faces highlighted (orange).
  */
-void inspect_face_order(Model3D* model, ObserverParams* params, const char* filename) {
+void inspect_faces_before(Model3D* model, ObserverParams* params, const char* filename) {
     if (!model || !params) return;
     FaceArrays3D* faces = &model->faces;
     int face_count = faces->face_count;
     if (face_count <= 0) { printf("No faces in model\n"); return; }
 
     // Ensure back-face culling on and recompute depths & ordering
-    int old_cull = cull_back_faces;
-    cull_back_faces = 1;
-    // processModelFast(model, params, filename);
-    painter_newell_sancha(model, face_count);
+    // helper: enable culling and run painter sort; returns previous culling state
+    int prepare_inspector_sort(Model3D* m, int fc);
+    int old_cull = prepare_inspector_sort(model, face_count);
 
     // Prompt user for face id
     printf("Enter face id (0..%d) to inspect: ", face_count - 1);
@@ -1877,6 +1917,10 @@ void inspect_face_order(Model3D* model, ObserverParams* params, const char* file
         int ch; while ((ch = getchar()) != '\n' && ch != EOF) ;
         printf("Input cancelled\n");
         cull_back_faces = old_cull; return;
+    }
+    // consume remaining chars on the line (newline) to avoid disturbing later fgets()
+    {
+        int ch; while ((ch = getchar()) != '\n' && ch != EOF) ;
     }
     // Use the exact number provided by the user (do not convert 1-based to 0-based)
     int target_face = sel;
@@ -1889,25 +1933,34 @@ void inspect_face_order(Model3D* model, ObserverParams* params, const char* file
     }
     if (pos < 0) { printf("Selected face is not in sorted list\n"); cull_back_faces = old_cull; return; }
 
-    // Check faces placed before the selected face
-    int* misplaced = (int*)malloc(face_count * sizeof(int));
+    // Inform user about target position
+    printf("Selected face %d is at position %d in the ordered list (total faces = %d)\n", target_face, pos, face_count);
+
+    // Ensure variables are visible throughout the function (used later for preview)
+    int* misplaced = NULL;
     int misplaced_count = 0;
+
+    // Check faces placed before the selected face (only consider visible faces)
+    misplaced = (int*)malloc(face_count * sizeof(int));
+    misplaced_count = 0;
+    int checked = 0, rel_neg = 0, rel_pos = 0, rel_zero = 0, bbox_skipped = 0;
     for (int i = 0; i < pos; ++i) {
         int f = faces->sorted_face_indices[i];
-        int rel = face_order_relation(model, target_face, f);
+        // Bounding-box quick rejection: if separated on X or Y, skip - no overlap
+        if (faces->maxx[f] <= faces->minx[target_face] || faces->maxx[target_face] <= faces->minx[f]
+            || faces->maxy[f] <= faces->miny[target_face] || faces->maxy[target_face] <= faces->miny[f]) {
+            bbox_skipped++; continue;
+        }
+        checked++;
+        int rel = pair_order_relation(model, f, target_face);
+        if (rel == -1) rel_neg++; else if (rel == 1) rel_pos++; else rel_zero++;
         if (rel == 1) { // this face should be after target -> misplaced
             misplaced[misplaced_count++] = f;
         }
     }
 
-    if (misplaced_count == 0) {
-        printf("No misplaced faces found relative to face %d\n", target_face);
-        printf("Press any key to continue\n");
-        keypress();
-        free(misplaced);
-        cull_back_faces = old_cull;
-        return;
-    }
+    printf("Summary (before): checked %d faces, bbox_skipped=%d. Tests => SHOULD_BE_BEFORE(-1): %d, SHOULD_BE_AFTER(+1): %d (misplaced: %d), INCONCLUSIVE: %d\n",
+           checked, bbox_skipped, rel_neg, rel_pos, misplaced_count, rel_zero);
 
     printf("==> %d misplaced faces relative to face %d : ", misplaced_count, target_face);
     for (int i = 0; i < misplaced_count; ++i) {   
@@ -1915,6 +1968,7 @@ void inspect_face_order(Model3D* model, ObserverParams* params, const char* file
         if (i < misplaced_count - 1) printf(",");
     }
     printf("\n\n");
+    keypress();
 
     // For each misplaced face, evaluate tests 1..7 and display which succeeded/failed/inconclusive
     for (int mi = 0; mi < misplaced_count; ++mi) {
@@ -1979,7 +2033,7 @@ void inspect_face_order(Model3D* model, ObserverParams* params, const char* file
         }
     }
 
-    printf("\nPress any key to preview: full wireframe, then highlight selected and misplaced faces (ESC to cancel)\n");
+    printf("\nPress a key to preview model with highlight selected and misplaced faces (if any).\n");
     keypress();
     startgraph(mode);
 
@@ -1993,17 +2047,18 @@ void inspect_face_order(Model3D* model, ObserverParams* params, const char* file
     processModelWireframe(model, params, filename);
     drawPolygons(model, faces->vertex_count, faces->face_count, model->vertices.vertex_count);
 
-    // 2) Overlay: selected face in green (pen 10)
-    // Ensure target face is visible for drawFace
-    faces->display_flag[target_face] = 1;
-    drawFace(model, target_face, 10, 1);
 
-    // 3) Overlay misplaced faces in orange (pen 6)
+    // 2) Overlay misplaced faces in orange (pen 6)
     for (int i = 0; i < misplaced_count; ++i) {
         int f = misplaced[i];
         faces->display_flag[f] = 1;
         drawFace(model, f, 6, 0);
     }
+
+    // 3) Overlay: selected face in green (pen 10)
+    // Ensure target face is visible for drawFace
+    faces->display_flag[target_face] = 1;
+    drawFace(model, target_face, 10, 1);
 
     MoveTo(5, 195);
     printf("Press any key to return\n");
@@ -2015,6 +2070,153 @@ void inspect_face_order(Model3D* model, ObserverParams* params, const char* file
     for (int i = 0; i < faces->face_count; ++i) faces->display_flag[i] = backup_flags[i];
     free(backup_flags);
     free(misplaced);
+    cull_back_faces = old_cull;
+}
+
+/* inspect_faces_after
+ * -------------------
+ * Purpose:
+ *  - Interactively inspect faces that are placed AFTER a selected face in the
+ *    painter's ordered list but that the pairwise tests conclude should be BEFORE.
+ * Behavior:
+ *  - Prompts the user for a face id, locates it in `sorted_face_indices` and checks
+ *    visible faces later in the ordered list using `pair_order_relation` and `evaluate_pair_tests`.
+ *  - Prints a compact per-face diagnostic and offers a wireframe preview with the
+ *    selected face highlighted (green) and misplaced faces highlighted (pink).
+ */
+void inspect_faces_after(Model3D* model, ObserverParams* params, const char* filename) {
+    if (!model || !params) return;
+    FaceArrays3D* faces = &model->faces;
+    int face_count = faces->face_count;
+    if (face_count <= 0) { printf("No faces in model\n"); return; }
+
+    int old_cull = prepare_inspector_sort(model, face_count);
+
+    printf("Enter face id (0..%d) to inspect AFTER-list: ", face_count - 1);
+    int sel = -1;
+    if (scanf("%d", &sel) != 1) {
+        int ch; while ((ch = getchar()) != '\n' && ch != EOF) ;
+        printf("Input cancelled\n");
+        cull_back_faces = old_cull; return;
+    }
+    // consume remaining chars on the line (newline) to avoid disturbing later fgets()
+    {
+        int ch; while ((ch = getchar()) != '\n' && ch != EOF) ;
+    }
+    int target_face = sel;
+    if (target_face < 0 || target_face >= face_count) { printf("Invalid face id\n"); cull_back_faces = old_cull; return; }
+
+    int pos = -1;
+    for (int i = 0; i < face_count; ++i) if (faces->sorted_face_indices[i] == target_face) { pos = i; break; }
+    if (pos < 0) { printf("Selected face is not in sorted list\n"); cull_back_faces = old_cull; return; }
+
+    int* after_list = (int*)malloc(face_count * sizeof(int)); int after_count = 0;
+    int checked = 0, rel_neg = 0, rel_pos = 0, rel_zero = 0, bbox_skipped = 0;
+    for (int i = pos + 1; i < face_count; ++i) {
+        int f = faces->sorted_face_indices[i];
+        // Bounding-box quick rejection: if separated on X or Y, skip - no overlap
+        if (faces->maxx[f] <= faces->minx[target_face] || faces->maxx[target_face] <= faces->minx[f]
+            || faces->maxy[f] <= faces->miny[target_face] || faces->maxy[target_face] <= faces->miny[f]) {
+            bbox_skipped++; continue;
+        }
+        int rel = pair_order_relation(model, f, target_face); // correct parameter order
+        checked++;
+        if (rel == -1) rel_neg++; else if (rel == 1) rel_pos++; else rel_zero++;
+        if (rel == -1) { // f should be before target -> misplaced
+            after_list[after_count++] = f;
+        }
+    }
+    printf("Summary (after): checked %d faces, bbox_skipped=%d. Tests => SHOULD_BE_BEFORE(-1, misplaced:%d): %d, SHOULD_BE_AFTER(+1): %d, INCONCLUSIVE: %d\n", checked, bbox_skipped, after_count, rel_neg, rel_pos, rel_zero);
+
+    if (after_count == 0) {
+        printf("No misplaced faces found after face %d\n", target_face);
+        printf("Press any key to continue\n");
+        keypress();
+        free(after_list);
+        cull_back_faces = old_cull;
+        return;
+    }
+
+    printf("==> %d faces after face %d that should be BEFORE it: ", after_count, target_face);
+    for (int i = 0; i < after_count; ++i) { printf(" %d", after_list[i]); if (i < after_count - 1) printf(","); }
+    printf("\n\n");
+
+    for (int ai = 0; ai < after_count; ++ai) {
+        int f = after_list[ai];
+        // Quick bbox rejection: if separated on X or Y, skip detailed tests
+        if (faces->maxx[f] <= faces->minx[target_face] || faces->maxx[target_face] <= faces->minx[f]
+            || faces->maxy[f] <= faces->miny[target_face] || faces->maxy[target_face] <= faces->miny[f]) {
+            printf("Face %d: skipped (axis-aligned bbox separation)\n", f);
+            continue;
+        }
+
+        int tests[7]; evaluate_pair_tests(model, f, target_face, tests);
+
+        char passed_t[128]; passed_t[0] = '\0';
+        char failed_t[128]; failed_t[0] = '\0';
+        char incon_t[128]; incon_t[0] = '\0';
+        int pcount_t = 0, fcount_t = 0, icount_t = 0;
+        for (int t = 0; t < 7; ++t) {
+            if (tests[t] == 1) { if (pcount_t) strncat(passed_t, ",", sizeof(passed_t)-strlen(passed_t)-1); char tmp[8]; snprintf(tmp, sizeof(tmp), "%d", t+1); strncat(passed_t, tmp, sizeof(passed_t)-strlen(passed_t)-1); pcount_t++; }
+            else if (tests[t] == -1) { if (fcount_t) strncat(failed_t, ",", sizeof(failed_t)-strlen(failed_t)-1); char tmp[8]; snprintf(tmp, sizeof(tmp), "%d", t+1); strncat(failed_t, tmp, sizeof(failed_t)-strlen(failed_t)-1); fcount_t++; }
+            else { if (icount_t) strncat(incon_t, ",", sizeof(incon_t)-strlen(incon_t)-1); char tmp[8]; snprintf(tmp, sizeof(tmp), "%d", t+1); strncat(incon_t, tmp, sizeof(incon_t)-strlen(incon_t)-1); icount_t++; }
+        }
+        if (pcount_t == 0) strncpy(passed_t, "(none)", sizeof(passed_t));
+        if (fcount_t == 0) strncpy(failed_t, "(none)", sizeof(failed_t));
+        if (icount_t == 0) strncpy(incon_t, "(none)", sizeof(incon_t));
+
+        char after_list_str[64]; after_list_str[0] = '\0';
+        char before_list_str[64]; before_list_str[0] = '\0';
+        char incon_list_str[64]; incon_list_str[0] = '\0';
+        int after_count_t = 0, before_count_t = 0, incon_count_t = 0;
+        for (int t = 0; t < 7; ++t) {
+            if (tests[t] == 1) { if (after_count_t) strncat(after_list_str, ",", sizeof(after_list_str)-strlen(after_list_str)-1); char tmp[8]; snprintf(tmp, sizeof(tmp), "%d", t+1); strncat(after_list_str, tmp, sizeof(after_list_str)-strlen(after_list_str)-1); after_count_t++; }
+            else if (tests[t] == -1) { if (before_count_t) strncat(before_list_str, ",", sizeof(before_list_str)-strlen(before_list_str)-1); char tmp[8]; snprintf(tmp, sizeof(tmp), "%d", t+1); strncat(before_list_str, tmp, sizeof(before_list_str)-strlen(before_list_str)-1); before_count_t++; }
+            else { if (incon_count_t) strncat(incon_list_str, ",", sizeof(incon_list_str)-strlen(incon_list_str)-1); char tmp[8]; snprintf(tmp, sizeof(tmp), "%d", t+1); strncat(incon_list_str, tmp, sizeof(incon_list_str)-strlen(incon_list_str)-1); incon_count_t++; }
+        }
+        if (before_count_t == 0) strncpy(before_list_str, "(none)", sizeof(before_list_str));
+        if (after_count_t == 0) strncpy(after_list_str, "(none)", sizeof(after_list_str));
+        if (incon_count_t == 0) strncpy(incon_list_str, "(none)", sizeof(incon_list_str));
+
+        printf("Face %d: BEFORE tests: %s; AFTER tests: %s; inconclusive: %s\n", f, before_list_str, after_list_str, incon_list_str);
+        if (after_count_t == 0 && before_count_t == 0) {
+            printf("  Overall: inconclusive (no decisive tests)\n");
+        } else {
+            if (before_count_t) printf("Concluded: Face %d should be BEFORE face %d (tests: %s)\n\n", f, target_face, before_list_str);
+            if (after_count_t) printf("Concluded: Face %d should be AFTER face %d (tests: %s)\n\n", f, target_face, after_list_str);
+        }
+    }
+
+    // Always offer a preview (even if no misplaced faces found)
+    printf("Press a key to preview model with highlight selected and misplaced faces (if any).\n");
+    keypress();
+    startgraph(mode);
+
+    unsigned char* backup_flags = (unsigned char*)malloc(faces->face_count);
+    for (int i = 0; i < faces->face_count; ++i) backup_flags[i] = faces->display_flag[i];
+
+    int old_frame = framePolyOnly;
+    framePolyOnly = 1; // wireframe
+    processModelWireframe(model, params, filename);
+    drawPolygons(model, faces->vertex_count, faces->face_count, model->vertices.vertex_count);
+
+    for (int i = 0; i < after_count; ++i) {
+        int f = after_list[i];
+        faces->display_flag[f] = 1;
+        drawFace(model, f, 12, 0);
+    }
+    faces->display_flag[target_face] = 1;
+    drawFace(model, target_face, 10, 1);
+
+    MoveTo(5, 195);
+    printf("Press any key to return\n");
+    keypress();
+    endgraph();
+
+    framePolyOnly = old_frame;
+    for (int i = 0; i < faces->face_count; ++i) faces->display_flag[i] = backup_flags[i];
+    free(backup_flags);
+    free(after_list);
     cull_back_faces = old_cull;
 }
 
@@ -3803,6 +4005,7 @@ void DoText() {
         int last_process_time_start = 0;
         int last_process_time_end = 0;
         int show_inconclusive = 1; // toggle: display inconclusive pair overlays (press 'i' to toggle)
+        int ligne = 0; // helper counter for interactive prompts and diagnostics
 
 
     newmodel:
@@ -3827,6 +4030,7 @@ void DoText() {
         // Initialize inconclusive pairs counter
         inconclusive_pairs_count = 0; // clear inconclusive pairs
 
+
         /* Optional: enable float painter to reproduce Windows numeric behaviour exactly via env var USE_FLOAT_PAINTER=1 */
         {
             const char* tmp = getenv("USE_FLOAT_PAINTER");
@@ -3836,53 +4040,11 @@ void DoText() {
             }
         }
 
-        /* Smoke-test mode: run a small non-interactive test to validate auto-fit and key behavior */
-        if (argc > 1 && strcmp(argv[1], "--smoke-test") == 0) {
-            printf("Running smoke test...\n");
-            /* Create a minimal OBJ file */
-            const char* testfile = "smoke_test.obj";
-            FILE* tf = fopen(testfile, "w");
-            if (tf == NULL) {
-                printf("Failed to create %s\n", testfile);
-                return 1;
-            }
-            fputs("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n", tf);
-            fclose(tf);
-
-            int res = loadModel3D(model, testfile);
-            if (res != 0) {
-                printf("loadModel3D failed (%d)\n", res);
-                return 1;
-            }
-            printf("auto_fit_ready=%d\n", model->auto_fit_ready);
-            printf("auto_suggested_distance=%.4f\n", FIXED_TO_FLOAT(model->auto_suggested_distance));
-            printf("auto_suggested_proj_scale=%.2f\n", FIXED_TO_FLOAT(model->auto_suggested_proj_scale));
-
-            /* Simulate the '+' handler */
-            Fixed32 cur = s_global_proj_scale_fixed;
-            Fixed32 mulp = FLOAT_TO_FIXED(1.1f);
-            Fixed32 plus_scale = FIXED_MUL_64(cur, mulp);
-            printf("scale_before=%.2f scale_after_plus=%.2f\n", FIXED_TO_FLOAT(cur), FIXED_TO_FLOAT(plus_scale));
-
-            /* Simulate the '-' handler */
-            Fixed32 mulm = FLOAT_TO_FIXED(0.9f);
-            Fixed32 minus_scale = FIXED_MUL_64(cur, mulm);
-            printf("scale_after_minus=%.2f\n", FIXED_TO_FLOAT(minus_scale));
-
-            /* Simulate A/Z on distance */
-            Fixed32 dcur = model->auto_suggested_distance;
-            Fixed32 d_a = dcur - (dcur / 10); // A (decrease by 10%)
-            Fixed32 d_z = dcur + (dcur / 10); // Z (increase by 10%)
-            printf("distance_before=%.4f distance_A=%.4f distance_Z=%.4f\n", FIXED_TO_FLOAT(dcur), FIXED_TO_FLOAT(d_a), FIXED_TO_FLOAT(d_z));
-
-            printf("Smoke test completed.\n");
-            return 0;
-        }
-
         // Ask for filename (loop until a non-empty filename is entered and the model loads)
         while (1) {
             printf("Enter the filename to read (ENTER to exit): ");
             if (fgets(filename, sizeof(filename), stdin) != NULL) {
+                printf("nom de fichier = %s\n", filename);
                 size_t len = strlen(filename);
                 if (len > 0 && filename[len-1] == '\n') {
                     filename[len-1] = '\0';
@@ -4115,7 +4277,13 @@ void DoText() {
             case 68:  // 'D' - inspect face ordering and show misplaced faces
             case 100: // 'd'
                 if (model == NULL) { printf("No model loaded\n"); goto loopReDraw; }
-                inspect_face_order(model, &params, filename);
+                inspect_faces_before(model, &params, filename);
+                goto bigloop;
+
+            case 83: // 'S' - inspect faces that are AFTER target but should be BEFORE (new)
+            case 115: // 's'
+                if (model == NULL) { printf("No model loaded\n"); goto loopReDraw; }
+                inspect_faces_after(model, &params, filename);
                 goto bigloop;
 
 case 70:  // 'F' - cycle painter mode: fast -> normal -> float

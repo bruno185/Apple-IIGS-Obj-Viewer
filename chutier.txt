@@ -410,3 +410,47 @@ void painter_newell_sanchaV3(Model3D* model, int face_count) {
 
     if (ordered_pairs) free(ordered_pairs);
 }
+
+
+        /* Smoke-test mode: run a small non-interactive test to validate auto-fit and key behavior */
+        if (argc > 1 && strcmp(argv[1], "--smoke-test") == 0) {
+            printf("Running smoke test...\n");
+            /* Create a minimal OBJ file */
+            const char* testfile = "smoke_test.obj";
+            FILE* tf = fopen(testfile, "w");
+            if (tf == NULL) {
+                printf("Failed to create %s\n", testfile);
+                return 1;
+            }
+            fputs("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n", tf);
+            fclose(tf);
+
+            int res = loadModel3D(model, testfile);
+            if (res != 0) {
+                printf("loadModel3D failed (%d)\n", res);
+                return 1;
+            }
+            printf("auto_fit_ready=%d\n", model->auto_fit_ready);
+            printf("auto_suggested_distance=%.4f\n", FIXED_TO_FLOAT(model->auto_suggested_distance));
+            printf("auto_suggested_proj_scale=%.2f\n", FIXED_TO_FLOAT(model->auto_suggested_proj_scale));
+
+            /* Simulate the '+' handler */
+            Fixed32 cur = s_global_proj_scale_fixed;
+            Fixed32 mulp = FLOAT_TO_FIXED(1.1f);
+            Fixed32 plus_scale = FIXED_MUL_64(cur, mulp);
+            printf("scale_before=%.2f scale_after_plus=%.2f\n", FIXED_TO_FLOAT(cur), FIXED_TO_FLOAT(plus_scale));
+
+            /* Simulate the '-' handler */
+            Fixed32 mulm = FLOAT_TO_FIXED(0.9f);
+            Fixed32 minus_scale = FIXED_MUL_64(cur, mulm);
+            printf("scale_after_minus=%.2f\n", FIXED_TO_FLOAT(minus_scale));
+
+            /* Simulate A/Z on distance */
+            Fixed32 dcur = model->auto_suggested_distance;
+            Fixed32 d_a = dcur - (dcur / 10); // A (decrease by 10%)
+            Fixed32 d_z = dcur + (dcur / 10); // Z (increase by 10%)
+            printf("distance_before=%.4f distance_A=%.4f distance_Z=%.4f\n", FIXED_TO_FLOAT(dcur), FIXED_TO_FLOAT(d_a), FIXED_TO_FLOAT(d_z));
+
+            printf("Smoke test completed.\n");
+            return 0;
+        }
