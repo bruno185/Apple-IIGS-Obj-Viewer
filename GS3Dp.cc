@@ -4237,6 +4237,89 @@ void DoText() {
         putchar((char) 12); // Clear screen    
 }
 
+/* show_help_pager
+ * ----------------
+ * Display the interactive help menu in pages limited to 20 lines each.
+ * The header is repeated at the top of every page. The user can press
+ * SPACE to continue to the next page or 'Q'/'q' to quit the help early.
+ */
+static void show_help_pager(void) {
+    const char* header[] = {
+        "===================================",
+        "    HELP - Keyboard Controller",
+        "===================================",
+        "" /* blank line */
+    };
+    const int header_count = sizeof(header)/sizeof(header[0]);
+
+    const char* lines[] = {
+        "Space: Display model info",
+        "A/Z: Increase/Decrease distance",
+        "+/-: Increase/Decrease projection scale (pixels per projected unit)",
+        "K: Edit angles/distance (ENTER may trigger auto-fit)",
+        "Arrow Left/Right: Decrease/Increase horizontal angle",
+        "Arrow Up/Down: Increase/Decrease vertical angle",
+        "W/X: Increase/Decrease screen rotation angle",
+        "C: Toggle color palette display",
+        "F: Toggle fast painter (ON by default: simple face sorting only)",
+        "P: Toggle frame-only polygons (default: OFF)",
+        "B: Toggle back-face culling (observer-space D<=0)",
+        "I: Toggle display of inconclusive face pairs",
+        "D: Inspect face ordering BEFORE selected face (misplaced faces shown in orange)",
+        "S: Inspect faces AFTER selected face that should be BEFORE it (misplaced shown in pink)",
+        "O: Check projected polygon overlap for two faces",
+        "L: Show model with face IDs centered on each face (label mode)",
+        "E: Dump face equations to equ.csv (debug)",
+        "N: Load new model",
+        "H: Display this help message",
+        "ESC: Quit program"
+    };
+    int n = sizeof(lines)/sizeof(lines[0]);
+
+    const int max_lines = 20; // page height limit
+    int content_per_page = max_lines - header_count;
+    if (content_per_page <= 0) content_per_page = 1;
+
+    int pos = 0;
+    while (pos < n) {
+        // Print header
+        for (int h = 0; h < header_count; ++h) printf("%s\n", header[h]);
+        // Print a page of content
+        int end = pos + content_per_page;
+        for (int i = pos; i < end && i < n; ++i) printf("%s\n", lines[i]);
+
+        // If we're at the end, wait for any key and return
+        if (end >= n) {
+            printf("\nPress any key to return...\n");
+            keypress();
+            return;
+        }
+
+        // Not the last page: prompt for next action
+        printf("\nPress 'Q' pour quitter, any other key to continue...\n");
+        char key;
+        asm 
+            {
+            sep #0x20
+        loop:
+            lda >0xC000     // Read the keyboard status from memory address 0xC000
+            bpl loop        // Wait until no key is pressed (= until bit 7 on)
+            and #0x007f     // Clear the high bit
+            sta >0xC010     // Clear the keypress by writing to 0xC010
+            sta key         // Store the key code in variable 'key'
+            rep #0x30
+            }
+
+        
+        if (key == 'Q' || key == 'q') return;
+        // any other key (including SPACE) continues
+        pos = end;
+        // clear a separating line between pages
+        DoText(); // clear screen and home cursor... Don't know why.
+        printf("\n");
+    }
+}
+
 
 // ==============================================================
 // THIS IS THE MAIN PROGRAM
@@ -4605,36 +4688,10 @@ case 98:  // 'b'
                 printf("Observer parameters updated.\n");
                 goto bigloop;
         
-            // dispaly help
+            // display help (paged)
             case 72:  // 'H'
             case 104: // 'h'
-                printf("===================================\n");
-                printf("    HELP - Keyboard Controller\n");
-                printf("===================================\n\n");
-                printf("Space: Display model info\n");
-                printf("A/Z: Increase/Decrease distance\n");
-                printf("+/-: Increase/Decrease projection scale (pixels per projected unit)\n");
-                printf("K: Edit angles/distance (ENTER may trigger auto-fit)\n");
-                printf("Arrow Left/Right: Decrease/Increase horizontal angle\n");
-                printf("Arrow Up/Down: Increase/Decrease vertical angle\n");
-                printf("W/X: Increase/Decrease screen rotation angle\n");
-                printf("C: Toggle color palette display\n");
-                printf("F: Toggle fast painter (default: ON — simple face sorting only)\n");
-                printf("P: Toggle frame-only polygons (default: OFF)\n");
-                printf("B: Toggle back-face culling (observer-space D<=0)\n");
-                printf("I: Toggle display of inconclusive face pairs\n");
-                printf("D: Inspect face ordering BEFORE selected face (misplaced faces shown in orange)\n");
-                printf("S: Inspect faces AFTER selected face that should be BEFORE it (misplaced shown in pink)\n");
-                printf("O: Check projected polygon overlap for two faces\n");
-                printf("L: Show model with face IDs centered on each face (label mode)\n");
-                printf("E: Dump face equations to equ.csv (debug)\n");
-                printf("N: Load new model\n");
-                printf("H: Display this help message\n");
-                printf("ESC: Quit program\n");
-                printf("===================================\n");
-                printf("\n");
-                printf("Press any key to continue...\n");
-                keypress();
+                show_help_pager();
                 goto loopReDraw;
 
             case 27:  // ESC - quit
