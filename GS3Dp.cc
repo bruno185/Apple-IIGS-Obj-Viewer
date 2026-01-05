@@ -1663,6 +1663,7 @@ void painter_newell_sancha_float(Model3D* model, int face_count) {
  * Returns:
  *  - previous `cull_back_faces` value (so callers can restore it)
  */
+segment "code00";
 static int prepare_inspector_sort(Model3D* m, int fc) {
     int old = cull_back_faces;
     cull_back_faces = 0; /* inspector should include back faces */
@@ -1683,6 +1684,7 @@ static int prepare_inspector_sort(Model3D* m, int fc) {
  *  - Uses depth (z_min/z_max), axis-aligned bbox separation (X/Y) and plane-based
  *    vertex-side tests (observer-side checks) mirroring painter logic.
  */
+segment "code01";
 static int pair_order_relation(Model3D* model, int f1, int f2) {
     if (!model) return 0;
     FaceArrays3D* faces = &model->faces;
@@ -1779,6 +1781,96 @@ static int pair_order_relation(Model3D* model, int f1, int f2) {
     // Non-conclusive
     return 0;
 }
+
+segment "code02";
+/* projected_polygons_overlap
+ * --------------------------
+ * Purpose:
+ *  - Given a model and two face indices, determine whether their projected
+ *    2D polygons overlap on screen.
+ * Algorithm:
+ *  1) Quick reject using screen-space axis-aligned bbox (min/max X/Y).
+ *  2) If bboxes overlap, test whether any edge of poly1 intersects any edge of poly2
+ *     (segment intersection in integer coordinates).
+ *  3) If no edge intersects, test containment: whether any vertex of poly1 lies inside poly2
+ *     or vice versa (ray-casting point-in-polygon).
+ * Returns:
+ *  - 1 if polygons overlap (intersect or one contains the other)
+ *  - 0 if disjoint
+ */
+static long long orient_ll(long long ax,long long ay,long long bx,long long by,long long cx,long long cy) {
+    return (bx-ax)*(cy-ay) - (by-ay)*(cx-ax);
+}
+static int on_seg_ll(long long ax,long long ay,long long bx,long long by,long long cx,long long cy) {
+    if (( (ax<=cx && cx<=bx) || (bx<=cx && cx<=ax) ) && ((ay<=cy && cy<=by) || (by<=cy && cy<=ay))) return 1;
+    return 0;
+}
+static int segs_intersect_int(int x1,int y1,int x2,int y2,int x3,int y3,int x4,int y4) {
+    long long o1 = orient_ll(x1,y1,x2,y2,x3,y3);
+    long long o2 = orient_ll(x1,y1,x2,y2,x4,y4);
+    long long o3 = orient_ll(x3,y3,x4,y4,x1,y1);
+    long long o4 = orient_ll(x3,y3,x4,y4,x2,y2);
+    /* Proper intersection only: require strict orientation differences
+     * This excludes colinear overlaps and endpoint-touching, which we treat
+     * as NON-overlapping for the purposes of projected_polygons_overlap. */
+    if (((o1 > 0 && o2 < 0) || (o1 < 0 && o2 > 0)) && ((o3 > 0 && o4 < 0) || (o3 < 0 && o4 > 0))) return 1;
+    /* Ignore colinear or on-segment cases (return 0) */
+    return 0;
+}
+static int point_in_poly_int(int px,int py,FaceArrays3D* faces, VertexArrays3D* vtx, int f, int n) {
+    int cnt = 0; int off = faces->vertex_indices_ptr[f];
+    for (int i = 0; i < n; ++i) {
+        int j = (i+1)%n;
+        int vi = faces->vertex_indices_buffer[off + i] - 1;
+        int vj = faces->vertex_indices_buffer[off + j] - 1;
+        int xi = vtx->x2d[vi], yi = vtx->y2d[vi];
+        int xj = vtx->x2d[vj], yj = vtx->y2d[vj];
+        /* If the point lies exactly on the edge, consider it OUTSIDE (no overlap).
+         * Use orient==0 + on-segment test to detect boundary points. */
+        if (orient_ll(xi, yi, xj, yj, px, py) == 0 && on_seg_ll(xi, yi, xj, yj, px, py)) return 0;
+        if (((yi > py) != (yj > py)) && (px < (long long)(xj - xi) * (py - yi) / (yj - yi) + xi)) cnt++;
+    }
+    return (cnt & 1);
+}
+static int projected_polygons_overlap(Model3D* model, int f1, int f2) {
+    if (!model) return 0;
+    FaceArrays3D* faces = &model->faces;
+    VertexArrays3D* vtx = &model->vertices;
+    int n1 = faces->vertex_count[f1];
+    int n2 = faces->vertex_count[f2];
+    if (n1 < 3 || n2 < 3) return 0;
+
+    int minx1 = faces->minx[f1], maxx1 = faces->maxx[f1], miny1 = faces->miny[f1], maxy1 = faces->maxy[f1];
+    int minx2 = faces->minx[f2], maxx2 = faces->maxx[f2], miny2 = faces->miny[f2], maxy2 = faces->maxy[f2];
+    if (maxx1 < minx2 || maxx2 < minx1 || maxy1 < miny2 || maxy2 < miny1) return 0;
+
+    int off1 = faces->vertex_indices_ptr[f1];
+    int off2 = faces->vertex_indices_ptr[f2];
+
+    for (int i = 0; i < n1; ++i) {
+        int i2 = (i+1) % n1;
+        int va = faces->vertex_indices_buffer[off1 + i] - 1;
+        int vb = faces->vertex_indices_buffer[off1 + i2] - 1;
+        int ax = vtx->x2d[va], ay = vtx->y2d[va];
+        int bx = vtx->x2d[vb], by = vtx->y2d[vb];
+        for (int j = 0; j < n2; ++j) {
+            int j2 = (j+1) % n2;
+            int vc = faces->vertex_indices_buffer[off2 + j] - 1;
+            int vd = faces->vertex_indices_buffer[off2 + j2] - 1;
+            int cx = vtx->x2d[vc], cy = vtx->y2d[vc];
+            int dx = vtx->x2d[vd], dy = vtx->y2d[vd];
+            if (segs_intersect_int(ax,ay,bx,by,cx,cy,dx,dy)) return 1;
+        }
+    }
+
+    int v1 = faces->vertex_indices_buffer[off1] - 1;
+    if (point_in_poly_int(vtx->x2d[v1], vtx->y2d[v1], faces, vtx, f2, n2)) return 1;
+    int v2 = faces->vertex_indices_buffer[off2] - 1;
+    if (point_in_poly_int(vtx->x2d[v2], vtx->y2d[v2], faces, vtx, f1, n1)) return 1;
+    return 0;
+}
+
+segment "code03";
 
 /* Evaluate tests 1..7 individually for a pair (f1, f2).
  * out[0]..out[6] will be filled with:
@@ -1888,6 +1980,7 @@ static void evaluate_pair_tests(Model3D* model, int f1, int f2, int out[7]) {
     } else out[6] = 0;
 }
 
+segment "code04";
 /* inspect_faces_before
  * --------------------
  * Purpose:
@@ -2064,6 +2157,7 @@ void inspect_faces_before(Model3D* model, ObserverParams* params, const char* fi
     printf("Press any key to return\n");
     keypress();
     endgraph();
+    DoText();
 
     // Restore state
     framePolyOnly = old_frame;
@@ -2073,6 +2167,7 @@ void inspect_faces_before(Model3D* model, ObserverParams* params, const char* fi
     cull_back_faces = old_cull;
 }
 
+segment "code05";
 /* inspect_faces_after
  * -------------------
  * Purpose:
@@ -2212,6 +2307,7 @@ void inspect_faces_after(Model3D* model, ObserverParams* params, const char* fil
     printf("Press any key to return\n");
     keypress();
     endgraph();
+    DoText();
 
     framePolyOnly = old_frame;
     for (int i = 0; i < faces->face_count; ++i) faces->display_flag[i] = backup_flags[i];
@@ -2562,6 +2658,7 @@ Model3D* createModel3D(void) {
  * 2. Free all face arrays (vertex_count, vertex_indices_buffer, vertex_indices_ptr, z_max, display_flag, sorted_face_indices)
  * 3. Free main Model3D structure
  */
+segment "code07";
 void destroyModel3D(Model3D* model) {
     if (model != NULL) {
         // Free all vertex arrays
@@ -2603,7 +2700,7 @@ void destroyModel3D(Model3D* model) {
     }
 }
 
-segment "code";
+segment "code08";
 /**
  * COMPLETE 3D MODEL LOADING
  * ==========================
@@ -2672,6 +2769,7 @@ int loadModel3D(Model3D* model, const char* filename) {
  * - Default values if input failure
  * - Automatic string->Fixed32 conversion with atof() then FLOAT_TO_FIXED
  */
+segment "code09";
 void getObserverParams(ObserverParams* params, Model3D* model) {
     char input[50];  // Buffer for user input
     
@@ -2777,6 +2875,7 @@ void getObserverParams(ObserverParams* params, Model3D* model) {
  *    faces are appended after visible faces to preserve index stability.
  *  - Timing instrumentation prints per-stage costs when not in PERFORMANCE_MODE.
  */
+segment "code10";
 void processModelFast(Model3D* model, ObserverParams* params, const char* filename) {
     int i;
 
@@ -2892,6 +2991,7 @@ void processModelFast(Model3D* model, ObserverParams* params, const char* filena
 
 // Lightweight wireframe processing: only transform & project vertices, set face visibility
 // No per-face depth calculations or sorting performed here for maximum speed in wireframe mode
+segment "code11";
 void processModelWireframe(Model3D* model, ObserverParams* params, const char* filename) {
     int i, j;
     Fixed32 cos_h, sin_h, cos_v, sin_v, cos_w, sin_w;
@@ -3002,6 +3102,7 @@ void processModelWireframe(Model3D* model, ObserverParams* params, const char* f
  * - Array overflow protection
  * - Coordinate format validation
  */
+segment "code12";
 int readVertices(const char* filename, VertexArrays3D* vtx, int max_vertices, Model3D* owner) {
     FILE *file;
     char line[MAX_LINE_LENGTH];
@@ -3131,6 +3232,7 @@ int readVertices(const char* filename, VertexArrays3D* vtx, int max_vertices, Mo
     return vertex_count;  // Return the number of vertices read
 }
 
+segment "code13";
 // Function to read faces into parallel arrays in FaceArrays3D structure
 int readFaces_model(const char* filename, Model3D* model) {
     FILE *file;
@@ -3297,6 +3399,7 @@ int readFaces_model(const char* filename, Model3D* model) {
  *   - The function optionally logs culling counts when not in PERFORMANCE_MODE.
  *   - The function is intentionally designed to be O(n) over faces and linear in face vertex counts.
  */
+segment "code14";
 void calculateFaceDepths(Model3D* model, Face3D* faces, int face_count) {
     int i, j;
     int culled_count = 0; // diagnostic: number of faces culled by back-face test (observer-space)
@@ -3448,6 +3551,7 @@ void calculateFaceDepths(Model3D* model, Face3D* faces, int face_count) {
 
 // Dump face plane coefficients and depth stats to CSV
 // Columns: face;a;b;c;d;z_min;z_mean;z_max;vertex_indices (or CSV style depending on flag)
+segment "code15";
 // New signature: last parameter 'alt_format' == 0 -> default (commas and dot decimal)
 //                                   == 1 -> use semicolon column separator and comma decimal separator
 void dumpFaceEquationsCSV(Model3D* model, const char* csv_filename, int alt_format) {
@@ -3571,6 +3675,7 @@ void dumpFaceEquationsCSV(Model3D* model, const char* csv_filename, int alt_form
 // Draw a single face (by face index) using the same QuickDraw path as drawPolygons
 // - respects face validity and display_flag
 // - uses globalPolyHandle and poly_handle_locked like drawPolygons
+segment "code16";
 // - honors framePolyOnly for frame-only rendering
 void drawFace(Model3D* model, int face_id, int fillPenPat, int show_index) {
     if (!model) return;
@@ -3689,6 +3794,7 @@ void drawFace(Model3D* model, int face_id, int fillPenPat, int show_index) {
 }
 
 
+segment "code17";
 // Function to draw polygons with QuickDraw
 void drawPolygons(Model3D* model, int* vertex_count, int face_count, int vertex_count_total) {
     int i, j;
@@ -3825,6 +3931,7 @@ void drawPolygons(Model3D* model, int* vertex_count, int face_count, int vertex_
 //     printf("Triangles: %d, Quads: %d\n", triangle_count, quad_count);
 }
 
+segment "code18";
 // Diagnostic: Frame in white all polygons listed in `inconclusive_pairs`.
 //
 // This helper iterates the recorded ambiguous pairs and draws a white outline around both
@@ -3926,6 +4033,7 @@ void frameInconclusivePairs(Model3D* model) {
 }
 
 // Simple helper: compute 2D projected coordinates from observer-space coords and a projection scale
+segment "code19";
 // Minimal version taking only Model3D* and angle_w (uses global projection scale)
 // - model: model containing vertices and x2d/y2d output arrays
 // - angle_w: final 2D rotation angle (degrees)
@@ -3957,6 +4065,7 @@ void compute2DFromObserver(Model3D* model, int angle_w) {
     }
 }
 
+segment "code20";
 void DoColor() {
         Rect r;
         unsigned char pstr[4];  // Pascal string: [length][characters...]]
@@ -3986,6 +4095,7 @@ void DoColor() {
         }
 }
 
+segment "code21";
 void DoText() {
         shroff();
         putchar((char) 12); // Clear screen    
@@ -3996,6 +4106,7 @@ void DoText() {
 // THIS IS THE MAIN PROGRAM
 // ==============================================================
 //
+segment "code22";
     int main(int argc, char** argv) {
         Model3D* model;
         ObserverParams params;
@@ -4005,7 +4116,6 @@ void DoText() {
         int last_process_time_start = 0;
         int last_process_time_end = 0;
         int show_inconclusive = 1; // toggle: display inconclusive pair overlays (press 'i' to toggle)
-        int ligne = 0; // helper counter for interactive prompts and diagnostics
 
 
     newmodel:
