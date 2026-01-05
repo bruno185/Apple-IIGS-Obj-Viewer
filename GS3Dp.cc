@@ -957,6 +957,14 @@ void painter_newell_sancha(Model3D* model, int face_count) {
             // Similarly, if separated on Y, faces do not overlap and no swap is needed.
             if (maxy1 <= miny2 || maxy2 <= miny1) continue; // separated on Y
 
+            /* Fast 2D overlap test (strict: touching = NON-overlap)
+             * Replace inline logic with call to the existing helper. If the
+             * projected polygons do NOT overlap, skip plane tests and continue. */
+            if (!projected_polygons_overlap(model, f1, f2)) { 
+                //if (!PERFORMANCE_MODE) printf("[DEBUG] painter_newell_sancha: faces %d and %d have no 2D overlap -> skipping pair\n", f1, f2); 
+                continue; }
+                //else printf("[DEBUG] painter_newell_sancha: faces %d and %d have 2D overlap -> continuing tests\n", f1, f2);
+
             // Use cached plane normals and d terms computed in calculateFaceDepths
             int n1 = faces->vertex_count[f1];
             int n2 = faces->vertex_count[f2];
@@ -1232,6 +1240,10 @@ void painter_newell_sancha(Model3D* model, int face_count) {
                     goto do_swap;
                 }
 
+
+
+
+                
             do_swap: {
 
                 if (ENABLE_DEBUG_SAVE) {
@@ -1842,7 +1854,7 @@ static int projected_polygons_overlap(Model3D* model, int f1, int f2) {
     FaceArrays3D* faces = &model->faces;
     VertexArrays3D* vtx = &model->vertices;
     /* Inform the user when an overlap check is performed (useful in interactive mode). */
-    printf("Checking projected overlap for faces %d and %d (touching is considered NON-overlap)\n", f1, f2);
+    if (ENABLE_DEBUG_SAVE) printf("Checking projected overlap for faces %d and %d (touching is considered NON-overlap)\n", f1, f2);
     int n1 = faces->vertex_count[f1];
     int n2 = faces->vertex_count[f2];
     if (n1 < 3 || n2 < 3) return 0;
@@ -4261,7 +4273,10 @@ static void show_help_pager(void) {
         "Arrow Up/Down: Increase/Decrease vertical angle",
         "W/X: Increase/Decrease screen rotation angle",
         "C: Toggle color palette display",
-        "F: Toggle fast painter (ON by default: simple face sorting only)",
+        "1: Set painter to FAST (simple face sorting only)",
+        "2: Set painter to NORMAL (Fixed32/64)",
+        "3: Set painter to FLOAT (float-based)",
+        "F: Disabled (use 1/2/3 instead)",
         "P: Toggle frame-only polygons (default: OFF)",
         "B: Toggle back-face culling (observer-space D<=0)",
         "I: Toggle display of inconclusive face pairs",
@@ -4334,7 +4349,7 @@ segment "code22";
         int colorpalette = 0; // default color palette
         int last_process_time_start = 0;
         int last_process_time_end = 0;
-        int show_inconclusive = 1; // toggle: display inconclusive pair overlays (press 'i' to toggle)
+        int show_inconclusive = 0; // toggle: display inconclusive pair overlays (press 'i' to toggle)
 
 
     newmodel:
@@ -4627,23 +4642,28 @@ segment "code22";
                 display_model_face_ids(model, &params, filename);
                 goto bigloop;
 
-case 70:  // 'F' - cycle painter mode: fast -> normal -> float
-case 102: // 'f'
-    painter_mode = (painter_mode + 1) % 3; // cycle 0->1->2->0...
-    if (painter_mode == PAINTER_MODE_FAST) {
-        printf("Painter mode: FAST (simple face sorting only)\n");
-        inconclusive_pairs_count = 0; // clear inconclusive pairs in fast mode
-    } else if (painter_mode == PAINTER_MODE_FIXED) {
-        printf("Painter mode: NORMAL (full tests, Fixed32/64)\n");
-    } else {
-        printf("Painter mode: FLOAT (float-based painter)\n");
-        inconclusive_pairs_count = 0; // clear inconclusive pairs in float mode
-    }
-    if (model != NULL) {
-        printf("Reprocessing model with current mode...\n");
-        goto bigloop;
-    }
-    goto loopReDraw;
+            /* New: direct painter mode keys
+             * '1' -> FAST, '2' -> NORMAL (Fixed), '3' -> FLOAT
+             */
+            case 49: // '1' - set FAST painter
+                painter_mode = PAINTER_MODE_FAST;
+                printf("Painter mode: FAST (simple face sorting only)\n");
+                inconclusive_pairs_count = 0; // clear inconclusive pairs in fast mode
+                if (model != NULL) { printf("Reprocessing model with current mode...\n"); goto bigloop; }
+                
+
+            case 50: // '2' - set NORMAL (Fixed32/64) painter
+                painter_mode = PAINTER_MODE_FIXED;
+                printf("Painter mode: NORMAL (full tests, Fixed32/64)\n");
+                if (model != NULL) { printf("Reprocessing model with current mode...\n"); goto bigloop; }
+                
+
+            case 51: // '3' - set FLOAT painter
+                painter_mode = PAINTER_MODE_FLOAT;
+                printf("Painter mode: FLOAT (float-based painter)\n");
+                inconclusive_pairs_count = 0; // clear inconclusive pairs in float mode
+                if (model != NULL) { printf("Reprocessing model with current mode...\n"); goto bigloop; }
+
 
 case 80:  // 'P' - toggle frame-only polygon rendering (was 'F')
 case 112: // 'p'
