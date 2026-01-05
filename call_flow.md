@@ -56,6 +56,11 @@
 
 - `startgraph()` / render / `endgraph()` / `DoText()` / optional `DoColor()`
 - Keys: Space (info), N (new model), Arrows / A Z (angles/distance), `K` (edit angles/distance without reloading model), `+`/`-` (adjust autoscale), `B` (toggle back-face culling: observer-space d<=0 test)
+  - **New keys (recent additions):**
+    - `D` / `d`: Inspect faces placed BEFORE a selected face in the painter order and report misplaced faces (previews in orange)
+    - `S` / `s`: Inspect faces placed AFTER a selected face that should be BEFORE it (previews in pink)
+    - `O` / `o`: Interactive **projected polygon overlap** inspector — prompts for two face IDs, reports YES/NO if their 2D projections overlap, and optionally previews the two faces (green/orange)
+    - `L` / `l`: Label mode — show the model with each face's ID drawn at its polygon center
 - `K` invokes `getObserverParams(&params, model)` interactively and applies new angles/distance without requiring a reload.
 - `+`/`-` behavior: if the model is not yet auto-scaled, these keys previously performed an **auto-fit** via `fitModelToView()`; auto-fit has been disabled (see `chutier.txt` for the archived implementation). They now only increase or decrease the current `params->distance` and update `model->auto_scale`. Automatic recomputation via bounding-sphere is disabled; distance adjustments are manual. The action prints a short message (e.g., "Distance increased" / "Distance decreased").
 
@@ -71,6 +76,9 @@
 - 🔧 **`destroyModel3D(Model3D* model)`** — frees all memory allocated by `createModel3D()`; must be called to avoid leaks
 - 🔧 **`readVertices()` / `readFaces_model()`** — file parsing helpers
 - 🔧 **`frameInconclusivePairs(Model3D* model)`** — utility: frames in white all polygons currently recorded in the global `inconclusive_pairs` buffer (diagnostic; no runtime side effects beyond rendering) 
+- 🔧 **`projected_polygons_overlap(Model3D* model, int f1, int f2)`** — screen-space test that returns 1 if two faces' projected 2D polygons *overlap* (proper edge intersection or containment), **0 if disjoint**. Important: *touching-only* cases (shared edge or single-vertex contact) are considered **NON-overlap** and return 0. The algorithm uses integer segment intersection (proper intersection only) then ray-casting containment; points on edges are treated as outside.
+- 🔧 **`inspect_polygons_overlap(Model3D* model, ObserverParams* params, const char* filename)`** — interactive wrapper bound to `O`/`o`: prints an explanation, prompts for two face IDs, reports overlap status (YES/NO), and asks whether to preview the faces; **default** on empty input (ENTER) is to show the model in wireframe and overlay the two faces colored (green/orange) with their IDs visible. The overlay respects painter stacking when possible.
+- 🔧 **`display_model_face_ids(Model3D* model, ObserverParams* params, const char* filename)`** — label mode bound to `L`/`l`: draws the model in wireframe and overlays each face's ID centered on that face (uses `drawFace(..., show_index=1)`), useful for debugging face ordering and references.
 
 **Notes:** `adjustDistanceFast()` (earlier fast-adjust prototype) was removed — automatic distance estimation has been disabled; distance adjustments are manual.
 

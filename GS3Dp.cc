@@ -1788,15 +1788,20 @@ segment "code02";
  * Purpose:
  *  - Given a model and two face indices, determine whether their projected
  *    2D polygons overlap on screen.
+ * Important behavior:
+ *  - **Touching** cases (shared edge or single-vertex contact) are treated as
+ *    **NON-overlap** (the function returns 0). This mirrors the graphical
+ *    intent: touching does not mean the polygons have positive-area intersection.
  * Algorithm:
  *  1) Quick reject using screen-space axis-aligned bbox (min/max X/Y).
  *  2) If bboxes overlap, test whether any edge of poly1 intersects any edge of poly2
- *     (segment intersection in integer coordinates).
+ *     (proper segment intersection only, colinear/on-segment is ignored here).
  *  3) If no edge intersects, test containment: whether any vertex of poly1 lies inside poly2
- *     or vice versa (ray-casting point-in-polygon).
+ *     or vice versa (ray-casting point-in-polygon). Points falling exactly on an edge
+ *     are treated as outside (not contained).
  * Returns:
- *  - 1 if polygons overlap (intersect or one contains the other)
- *  - 0 if disjoint
+ *  - 1 if polygons overlap (proper intersection or one contains the other)
+ *  - 0 if disjoint or touching-only
  */
 static long long orient_ll(long long ax,long long ay,long long bx,long long by,long long cx,long long cy) {
     return (bx-ax)*(cy-ay) - (by-ay)*(cx-ax);
@@ -1836,6 +1841,8 @@ static int projected_polygons_overlap(Model3D* model, int f1, int f2) {
     if (!model) return 0;
     FaceArrays3D* faces = &model->faces;
     VertexArrays3D* vtx = &model->vertices;
+    /* Inform the user when an overlap check is performed (useful in interactive mode). */
+    printf("Checking projected overlap for faces %d and %d (touching is considered NON-overlap)\n", f1, f2);
     int n1 = faces->vertex_count[f1];
     int n2 = faces->vertex_count[f2];
     if (n1 < 3 || n2 < 3) return 0;
@@ -2320,14 +2327,25 @@ void inspect_faces_after(Model3D* model, ObserverParams* params, const char* fil
 segment "code23";
 /* inspect_polygons_overlap
  * ------------------------
- * Interactively ask user for two face IDs, call projected_polygons_overlap,
- * report result and optionally preview the two faces (f1 green, f2 orange).
+ * Interactive inspector for projected polygon overlap.
+ * Behavior:
+ *  - Prints a short explanation before prompting (touching = NON-overlap).
+ *  - Prompts for face id 1 and face id 2 (0..face_count-1).
+ *  - Calls `projected_polygons_overlap(model, f1, f2)` and prints YES/NO.
+ *  - Prompts whether to show the faces on the model; **default** is YES when
+ *    the user presses ENTER (empty line => show the model).
+ *  - When showing, draws the entire model in wireframe, then overlays the two
+ *    faces with colors and displays their indices (the overlay respects the
+ *    painter's `sorted_face_indices` stacking order when possible).
  */
 void inspect_polygons_overlap(Model3D* model, ObserverParams* params, const char* filename) {
     if (!model || !params) return;
     FaceArrays3D* faces = &model->faces;
     int face_count = faces->face_count;
     if (face_count <= 0) { printf("No faces in model\n"); return; }
+
+    // Inform the user what this inspector does before asking for input
+    printf("Inspector: check whether two faces' 2D projections overlap (touching = NON-overlap).\n");
 
     // Prompt for face 1
     printf("Enter face id 1 (0..%d): ", face_count - 1);
@@ -2343,15 +2361,16 @@ void inspect_polygons_overlap(Model3D* model, ObserverParams* params, const char
     { int ch; while ((ch = getchar()) != '\n' && ch != EOF); }
     if (f2 < 0 || f2 >= face_count) { printf("Invalid face id 2\n"); return; }
 
+    // Report IDs and result
     int ov = projected_polygons_overlap(model, f1, f2);
-    printf("Projected overlap between face %d and %d: %s\n", f1, f2, ov ? "YES" : "NO");
+    printf("Faces: %d and %d -> Projected overlap: %s\n", f1, f2, ov ? "YES" : "NO");
 
-    // Ask user whether to show faces on model
-    char resp[8];
-    printf("Show faces on model? (O/n): ");
+    // Ask user whether to show faces on model (default = YES on empty input)
+    char resp[16];
+    printf("Show faces on model? (O/n) [ENTER = yes]: ");
     if (fgets(resp, sizeof(resp), stdin) == NULL) return;
-    if (resp[0] == 'N' || resp[0] == 'n') return;
-    if (resp[0] != 'O' && resp[0] != 'o') return;
+    if (resp[0] == 'N' || resp[0] == 'n') return; // explicit no
+    // anything else (including '\n' on empty line) -> show
 
     // Prepare view and display f1 (green) and f2 (orange)
     startgraph(mode);
@@ -2359,7 +2378,7 @@ void inspect_polygons_overlap(Model3D* model, ObserverParams* params, const char
     for (int i = 0; i < faces->face_count; ++i) backup_flags[i] = faces->display_flag[i];
 
     int old_frame = framePolyOnly;
-    framePolyOnly = 0; // filled
+    framePolyOnly = 1; // not filled
 
     // Hide all, show only selected faces
     for (int i = 0; i < faces->face_count; ++i) faces->display_flag[i] = 0;
@@ -2369,9 +2388,9 @@ void inspect_polygons_overlap(Model3D* model, ObserverParams* params, const char
     processModelWireframe(model, params, filename);
     drawPolygons(model, faces->vertex_count, faces->face_count, model->vertices.vertex_count);
 
-    // Overlay explicit colored faces (ensure visibility)
-    drawFace(model, f1, 10, 1); // green
-    drawFace(model, f2, 6, 0);  // orange
+    // Overlay explicit colored faces (ensure visibility); show indices for both
+    drawFace(model, f1, 10, 1); // green with index
+    drawFace(model, f2, 6, 1);  // orange with index
 
     MoveTo(5, 195);
     printf("Press any key to return\n");
@@ -2386,6 +2405,52 @@ void inspect_polygons_overlap(Model3D* model, ObserverParams* params, const char
 }
 
 /* End inspect_polygons_overlap */
+
+segment "code24";
+/* display_model_face_ids
+ * ----------------------
+ * Draw the model in wireframe and overlay each face id centered on its polygon.
+ * Implementation details:
+ *  - Sets `framePolyOnly = 1` to render the wireframe for clarity,
+ *  - Ensures all faces are visible, draws polygon frames, then calls `drawFace`
+ *    with `show_index == 1` for each face to render the numeric ID in the center.
+ */
+void display_model_face_ids(Model3D* model, ObserverParams* params, const char* filename) {
+    if (!model || !params) return;
+    FaceArrays3D* faces = &model->faces;
+    if (faces->face_count <= 0) { printf("No faces in model\n"); return; }
+
+    startgraph(mode);
+
+    // Backup display flags
+    unsigned char* backup_flags = (unsigned char*)malloc(faces->face_count);
+    for (int i = 0; i < faces->face_count; ++i) backup_flags[i] = faces->display_flag[i];
+
+    int old_frame = framePolyOnly;
+    framePolyOnly = 1; // wireframe for clear labels
+
+    // Ensure all faces visible
+    for (int i = 0; i < faces->face_count; ++i) faces->display_flag[i] = 1;
+
+    processModelWireframe(model, params, filename);
+    drawPolygons(model, faces->vertex_count, faces->face_count, model->vertices.vertex_count);
+
+    // Draw each face with index shown in center
+    for (int f = 0; f < faces->face_count; ++f) {
+        if (faces->display_flag[f]) drawFace(model, f, 10, 1);
+    }
+
+    MoveTo(5, 195);
+    printf("Press any key to return\n");
+    keypress();
+    endgraph();
+    DoText();
+
+    // Restore
+    framePolyOnly = old_frame;
+    for (int i = 0; i < faces->face_count; ++i) faces->display_flag[i] = backup_flags[i];
+    free(backup_flags);
+}
 
     // UTILITY FUNCTIONS...
 // ============================================================================
@@ -4473,6 +4538,12 @@ segment "code22";
                 inspect_polygons_overlap(model, &params, filename);
                 goto bigloop;
 
+            case 76: // 'L' - show model with face ID labels at polygon centers
+            case 108: // 'l'
+                if (model == NULL) { printf("No model loaded\n"); goto loopReDraw; }
+                display_model_face_ids(model, &params, filename);
+                goto bigloop;
+
 case 70:  // 'F' - cycle painter mode: fast -> normal -> float
 case 102: // 'f'
     painter_mode = (painter_mode + 1) % 3; // cycle 0->1->2->0...
@@ -4552,6 +4623,10 @@ case 98:  // 'b'
                 printf("P: Toggle frame-only polygons (default: OFF)\n");
                 printf("B: Toggle back-face culling (observer-space D<=0)\n");
                 printf("I: Toggle display of inconclusive face pairs\n");
+                printf("D: Inspect face ordering BEFORE selected face (misplaced faces shown in orange)\n");
+                printf("S: Inspect faces AFTER selected face that should be BEFORE it (misplaced shown in pink)\n");
+                printf("O: Check projected polygon overlap for two faces\n");
+                printf("L: Show model with face IDs centered on each face (label mode)\n");
                 printf("E: Dump face equations to equ.csv (debug)\n");
                 printf("N: Load new model\n");
                 printf("H: Display this help message\n");
