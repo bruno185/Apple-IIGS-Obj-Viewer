@@ -2189,6 +2189,7 @@ void inspect_faces_after(Model3D* model, ObserverParams* params, const char* fil
 
     printf("Enter face id (0..%d) to inspect AFTER-list: ", face_count - 1);
     int sel = -1;
+
     if (scanf("%d", &sel) != 1) {
         int ch; while ((ch = getchar()) != '\n' && ch != EOF) ;
         printf("Input cancelled\n");
@@ -2315,6 +2316,76 @@ void inspect_faces_after(Model3D* model, ObserverParams* params, const char* fil
     free(after_list);
     cull_back_faces = old_cull;
 }
+
+segment "code23";
+/* inspect_polygons_overlap
+ * ------------------------
+ * Interactively ask user for two face IDs, call projected_polygons_overlap,
+ * report result and optionally preview the two faces (f1 green, f2 orange).
+ */
+void inspect_polygons_overlap(Model3D* model, ObserverParams* params, const char* filename) {
+    if (!model || !params) return;
+    FaceArrays3D* faces = &model->faces;
+    int face_count = faces->face_count;
+    if (face_count <= 0) { printf("No faces in model\n"); return; }
+
+    // Prompt for face 1
+    printf("Enter face id 1 (0..%d): ", face_count - 1);
+    int f1 = -1;
+    if (scanf("%d", &f1) != 1) { int ch; while ((ch = getchar()) != '\n' && ch != EOF); printf("Input cancelled\n"); return; }
+    { int ch; while ((ch = getchar()) != '\n' && ch != EOF); }
+    if (f1 < 0 || f1 >= face_count) { printf("Invalid face id 1\n"); return; }
+
+    // Prompt for face 2
+    printf("Enter face id 2 (0..%d): ", face_count - 1);
+    int f2 = -1;
+    if (scanf("%d", &f2) != 1) { int ch; while ((ch = getchar()) != '\n' && ch != EOF); printf("Input cancelled\n"); return; }
+    { int ch; while ((ch = getchar()) != '\n' && ch != EOF); }
+    if (f2 < 0 || f2 >= face_count) { printf("Invalid face id 2\n"); return; }
+
+    int ov = projected_polygons_overlap(model, f1, f2);
+    printf("Projected overlap between face %d and %d: %s\n", f1, f2, ov ? "YES" : "NO");
+
+    // Ask user whether to show faces on model
+    char resp[8];
+    printf("Show faces on model? (O/n): ");
+    if (fgets(resp, sizeof(resp), stdin) == NULL) return;
+    if (resp[0] == 'N' || resp[0] == 'n') return;
+    if (resp[0] != 'O' && resp[0] != 'o') return;
+
+    // Prepare view and display f1 (green) and f2 (orange)
+    startgraph(mode);
+    unsigned char* backup_flags = (unsigned char*)malloc(faces->face_count);
+    for (int i = 0; i < faces->face_count; ++i) backup_flags[i] = faces->display_flag[i];
+
+    int old_frame = framePolyOnly;
+    framePolyOnly = 0; // filled
+
+    // Hide all, show only selected faces
+    for (int i = 0; i < faces->face_count; ++i) faces->display_flag[i] = 0;
+    faces->display_flag[f1] = 1;
+    faces->display_flag[f2] = 1;
+
+    processModelWireframe(model, params, filename);
+    drawPolygons(model, faces->vertex_count, faces->face_count, model->vertices.vertex_count);
+
+    // Overlay explicit colored faces (ensure visibility)
+    drawFace(model, f1, 10, 1); // green
+    drawFace(model, f2, 6, 0);  // orange
+
+    MoveTo(5, 195);
+    printf("Press any key to return\n");
+    keypress();
+    endgraph();
+    DoText();
+
+    // Restore state
+    framePolyOnly = old_frame;
+    for (int i = 0; i < faces->face_count; ++i) faces->display_flag[i] = backup_flags[i];
+    free(backup_flags);
+}
+
+/* End inspect_polygons_overlap */
 
     // UTILITY FUNCTIONS...
 // ============================================================================
@@ -4394,6 +4465,12 @@ segment "code22";
             case 115: // 's'
                 if (model == NULL) { printf("No model loaded\n"); goto loopReDraw; }
                 inspect_faces_after(model, &params, filename);
+                goto bigloop;
+
+            case 79: // 'O' - check projected polygon overlap
+            case 111: // 'o'
+                if (model == NULL) { printf("No model loaded\n"); goto loopReDraw; }
+                inspect_polygons_overlap(model, &params, filename);
                 goto bigloop;
 
 case 70:  // 'F' - cycle painter mode: fast -> normal -> float
