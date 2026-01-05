@@ -755,7 +755,6 @@ void painter_newell_sancha_fast(Model3D* model, int face_count) {
     qsort_faces_ptr_for_cmp = faces;
     qsort(faces->sorted_face_indices, visible_count, sizeof(int), cmp_faces_by_zmean);
     qsort_faces_ptr_for_cmp = NULL;
-
 }
 
 
@@ -1895,7 +1894,7 @@ void inspect_face_order(Model3D* model, ObserverParams* params, const char* file
     int misplaced_count = 0;
     for (int i = 0; i < pos; ++i) {
         int f = faces->sorted_face_indices[i];
-        int rel = face_order_relation(model, f, target_face);
+        int rel = face_order_relation(model, target_face, f);
         if (rel == 1) { // this face should be after target -> misplaced
             misplaced[misplaced_count++] = f;
         }
