@@ -1866,26 +1866,46 @@ static int projected_polygons_overlap(Model3D* model, int f1, int f2) {
     int off1 = faces->vertex_indices_ptr[f1];
     int off2 = faces->vertex_indices_ptr[f2];
 
+    /* Edge-vs-edge proper intersection with per-edge bbox quick-reject.
+     * This avoids expensive orientation tests for clearly separated edges.
+     * We use <= in bbox checks so that touching-only edges are treated as
+     * non-overlapping (consistent with the semantics). */
     for (int i = 0; i < n1; ++i) {
         int i2 = (i+1) % n1;
         int va = faces->vertex_indices_buffer[off1 + i] - 1;
         int vb = faces->vertex_indices_buffer[off1 + i2] - 1;
         int ax = vtx->x2d[va], ay = vtx->y2d[va];
         int bx = vtx->x2d[vb], by = vtx->y2d[vb];
+        int aminx = ax < bx ? ax : bx; int amaxx = ax > bx ? ax : bx;
+        int aminy = ay < by ? ay : by; int amaxy = ay > by ? ay : by;
         for (int j = 0; j < n2; ++j) {
             int j2 = (j+1) % n2;
             int vc = faces->vertex_indices_buffer[off2 + j] - 1;
             int vd = faces->vertex_indices_buffer[off2 + j2] - 1;
             int cx = vtx->x2d[vc], cy = vtx->y2d[vc];
             int dx = vtx->x2d[vd], dy = vtx->y2d[vd];
+            int cminx = cx < dx ? cx : dx; int cmaxx = cx > dx ? cx : dx;
+            int cminy = cy < dy ? cy : dy; int cmaxy = cy > dy ? cy : dy;
+            /* quick reject if edge AABBs do not overlap (<= to consider touching as non-overlap) */
+            if (amaxx <= cminx || cmaxx <= aminx || amaxy <= cminy || cmaxy <= aminy) continue;
             if (segs_intersect_int(ax,ay,bx,by,cx,cy,dx,dy)) return 1;
         }
     }
 
+    /* Containment tests: only check if candidate point lies inside the other's bbox first
+     * (cheap) before doing the full ray-cast in point_in_poly_int. This skips expensive
+     * loops for points obviously outside the other polygon's bbox. */
     int v1 = faces->vertex_indices_buffer[off1] - 1;
-    if (point_in_poly_int(vtx->x2d[v1], vtx->y2d[v1], faces, vtx, f2, n2)) return 1;
+    int px = vtx->x2d[v1], py = vtx->y2d[v1];
+    if (!(px < minx2 || px > maxx2 || py < miny2 || py > maxy2)) {
+        if (point_in_poly_int(px, py, faces, vtx, f2, n2)) return 1;
+    }
+
     int v2 = faces->vertex_indices_buffer[off2] - 1;
-    if (point_in_poly_int(vtx->x2d[v2], vtx->y2d[v2], faces, vtx, f1, n1)) return 1;
+    px = vtx->x2d[v2]; py = vtx->y2d[v2];
+    if (!(px < minx1 || px > maxx1 || py < miny1 || py > maxy1)) {
+        if (point_in_poly_int(px, py, faces, vtx, f1, n1)) return 1;
+    }
     return 0;
 }
 
