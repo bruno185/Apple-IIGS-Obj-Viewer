@@ -16,20 +16,12 @@
   - → 🔧 **`loadModel3D(model, filename)`** — orchestrates model loading
     - → 🔧 **`readVertices()`** — read `v x y z` into Fixed arrays
     - → 🔧 **`readFaces_model()`** — parse faces into packed index buffers
-    - → 🔧 **(archived) `computeModelBoundingSphere()`** — previously computed centroid+radius for auto-fit; functionality removed/archived (see `chutier.txt`)
 
 ### Parameter parsing / Auto-fit
 
 - 🔧 **`getObserverParams(&params, model)`** — interactive parameter parsing
   - reads angles H/V/W and screen rotation
-  - If user presses ENTER for distance: **auto-fit path (removed)**
-    - 🔧 **`fitModelToView(model, params, target_max_dim, margin, percentile, center_flag)`** — *archived (removed from `GS3Dp.cc`); implementation copied to `chutier.txt`; runtime auto-fit is disabled*
-      - sample vertices (up to `max_samples`) to compute centroid + squared radii (archived behavior)
-      - quickselect percentile radius → compute scale and center (archived behavior)
-      - used to update `model->auto_scale`, `auto_center_*`, `auto_scaled` (archived)
-      - previously updated model bounding sphere (`bs_cx/bs_cy/bs_cz/bs_r`) accordingly — now kept in sync **O(1)** when applied manually
-      - Distance estimation is disabled here; `params->distance` must be set explicitly by the user
-      - **FALLBACK:** none — per-vertex auto-fit removed
+  - If user presses ENTER for distance: a precomputed auto-fit suggestion may be applied if available; on-the-fly auto-fit is disabled.
   - else: set `params->distance` from user input
 
 ---
@@ -40,7 +32,7 @@
   - 🔧 **`processModelFast(model, &params, filename)`** — runs every frame; ultra-fast transformation + projection
     - precompute trig products (Fixed32)
     - For each vertex (tight Fixed32 loop): transform → compute `xo/yo/zo` → project to `x2d/y2d`
-    - **Note:** runtime auto-fit is *not* applied inside `processModelFast` — any autoscale must be applied ahead of time; the previous helper `fitModelToView()` has been removed and archived to `chutier.txt`. `processModelFast` operates on already-scaled model vertices.
+    - **Note:** runtime auto-fit is *not* applied inside `processModelFast` — any autoscale must be applied ahead of time; the auto-fit helper has been removed and archived to `chutier.txt`. `processModelFast` operates on already-scaled model vertices.
     - 🔧 **`calculateFaceDepths()`** — compute per-face `z_min/z_max/z_mean`, display flags, planar coefficients (Newell). Optionally performs observer-space back-face culling (plane D <= 0) when the `B` toggle is enabled.
     - 🔧 **`painter_newell_sancha()`** — sort faces by depth and correct ambiguous order (qsort + corrections). When back-face culling is enabled, the painter builds and sorts a list limited to faces with `display_flag == 1` (visible faces), performs order corrections only on that sub-list for efficiency and correctness, and appends culled faces afterward to preserve `sorted_face_indices` stability.
       - Collects *inconclusive pairs* (pairs of faces where order is ambiguous) into an **in-memory buffer** for later inspection; note: the buffer `inconclusive_pairs` is now a global buffer (preallocated for performance) used by diagnostic and framing helpers.
@@ -82,7 +74,7 @@
 - 🔧 `void inspect_polygons_overlap(Model3D* model, ObserverParams* params, const char* filename)` — `GS3Dp.cc:2371` — interactive wrapper bound to `O`/`o`: prompts for two face IDs, reports overlap status (YES/NO), and optionally previews the two faces (green/orange); default on ENTER shows the entire model in wireframe with the two faces highlighted.
 - 🔧 `void display_model_face_ids(Model3D* model, ObserverParams* params, const char* filename)` — `GS3Dp.cc:2449` — label mode bound to `L`/`l`: draws the model in wireframe and overlays each face's ID centered on that face (uses `drawFace(..., show_index=1)`), useful for debugging face ordering and references.
 
-**Notes:** `adjustDistanceFast()` (earlier fast-adjust prototype) was removed — automatic distance estimation has been disabled; distance adjustments are manual.
+**Notes:** Automatic distance estimation has been disabled; distance adjustments are manual.
 
 ---
 
@@ -115,7 +107,6 @@
 > Note: Wireframe mode is handled by the `framePolyOnly` flag and using `drawPolygons()`; there is no separate `processModelWireframe()` implementation in the current file.
 
 ### Utilities / Helpers
-- 🔧 `void fitModelToView(Model3D* model, ObserverParams* params, float target_max_dim, float margin, float percentile, int center_flag)` — **removed from `GS3Dp.cc`; implementation archived in `chutier.txt`**
 - 🔧 `void dumpFaceEquationsCSV(Model3D* model, const char* csv_filename, int alt_format)` — `GS3Dp.cc:3671`
 - 🔧 `void debug_two_faces(Model3D* model, int f1, int f2)` — `GS3Dp.cc:762` — small debug helper to preview two faces side-by-side (used by painter diagnostics)
 - 🔧 `void getObserverParams(ObserverParams* params, Model3D* model)` — `GS3Dp.cc:2971`
