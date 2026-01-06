@@ -53,7 +53,7 @@ int main(int argc, char** argv) {
     char titlebuf[128]; snprintf(titlebuf, sizeof(titlebuf), "GS3Dp Viewer - proj_scale=%.1f", proj_scale); SDL_SetWindowTitle(win, titlebuf);
 
     int winw = 1024, winh = 768;
-    int running = 1; SDL_Event ev; int wireframe = 0;
+    int running = 1; SDL_Event ev; int wireframe = 0; int show_inconclusive = 0;
 
     while (running) {
         int camera_changed = 0;
@@ -69,7 +69,7 @@ int main(int argc, char** argv) {
                 else if (k == SDLK_MINUS) { dist *= 1.1f; camera_changed = 1; }
                 /* distance-scale handling removed: distance is controlled via the Distance field in the 3D dialog */
                 /* proj_scale handlers remain below */
-                else if (k == SDLK_PERIOD) { proj_scale *= 1.1f; if (proj_scale > 2000.0f) proj_scale = 2000.0f; camera_changed = 1; printf("Projection scale increased: %.1f\n", proj_scale); snprintf(titlebuf, sizeof(titlebuf), "GS3Dp Viewer - proj_scale=%.1f", proj_scale); SDL_SetWindowTitle(win, titlebuf); }
+                else if (k == SDLK_PERIOD) { proj_scale *= 1.1f; if (proj_scale > 10000.0f) proj_scale = 10000.0f; camera_changed = 1; printf("Projection scale increased: %.1f\n", proj_scale); snprintf(titlebuf, sizeof(titlebuf), "GS3Dp Viewer - proj_scale=%.1f", proj_scale); SDL_SetWindowTitle(win, titlebuf); }
                 else if (k == SDLK_COMMA) { proj_scale *= 0.9f; if (proj_scale < 10.0f) proj_scale = 10.0f; camera_changed = 1; printf("Projection scale decreased: %.1f\n", proj_scale); snprintf(titlebuf, sizeof(titlebuf), "GS3Dp Viewer - proj_scale=%.1f", proj_scale); SDL_SetWindowTitle(win, titlebuf); }
                 else if (k == SDLK_b) { set_cull_back_faces(!get_cull_back_faces()); printf("Back-face culling: %s\n", get_cull_back_faces() ? "ON" : "OFF"); camera_changed = 1; }
                 else if (k == SDLK_d) { inspect_faces_before(m); camera_changed = 1; }
@@ -89,6 +89,7 @@ int main(int argc, char** argv) {
                 else if (k == SDLK_l) { display_model_face_ids(m); camera_changed = 1; }
                 else if (k == SDLK_w) { wireframe = !wireframe; }
                 else if (k == SDLK_s) { /* SHIFT-S will inspect_after, plain 's' saves screenshot */ if (ev.key.keysym.mod & KMOD_SHIFT) { inspect_faces_after(m); camera_changed = 1; } else { save_screenshot(win, rend, "viewer_capture.bmp"); } }
+                else if (k == SDLK_i) { show_inconclusive = !show_inconclusive; printf("Inconclusive overlay: %s\n", show_inconclusive ? "ON" : "OFF"); camera_changed = 1; }
             }
         }
         if (camera_changed) set_observer_params(ah, av, aw, dist);
@@ -140,4 +141,23 @@ int main(int argc, char** argv) {
                 Uint8 hb = (hcol==6)?0:192;
                 draw_polygon_outline(rend, xs, ys, f->count, hr, hg, hb);
             }
-}
+        }
+        // Draw inconclusive pairs overlay (diagnostic)
+        if (show_inconclusive) {
+            int cnt = get_inconclusive_pair_count(); int *pairs = get_inconclusive_pairs();
+            if (cnt > 0 && pairs) {
+                for (int pi = 0; pi < cnt; ++pi) {
+                    int f1 = pairs[2*pi], f2 = pairs[2*pi+1];
+                    if (f1 >= 0 && f1 < m->face_count) {
+                        Face* f = &m->faces[f1]; float xs2[256], ys2[256];
+                        for (int k=0;k<f->count;k++) { int vi = f->indices[k]; ObsVertex ov = obs[vi]; float px = (ov.yo==0.0f)?ov.xo:(ov.xo/ov.yo); float py = (ov.yo==0.0f)?ov.zo:(ov.zo/ov.yo); int sx, sy; screen_coords_from_proj(px, py, winw, winh, scale, cx, cy, &sx, &sy); xs2[k] = (float)sx; ys2[k] = (float)sy; }
+                        draw_polygon_outline(rend, xs2, ys2, f->count, 255,255,255);
+                    }
+                    if (f2 >= 0 && f2 < m->face_count) {
+                        Face* f = &m->faces[f2]; float xs2[256], ys2[256];
+                        for (int k=0;k<f->count;k++) { int vi = f->indices[k]; ObsVertex ov = obs[vi]; float px = (ov.yo==0.0f)?ov.xo:(ov.xo/ov.yo); float py = (ov.yo==0.0f)?ov.zo:(ov.zo/ov.yo); int sx, sy; screen_coords_from_proj(px, py, winw, winh, scale, cx, cy, &sx, &sy); xs2[k] = (float)sx; ys2[k] = (float)sy; }
+                        draw_polygon_outline(rend, xs2, ys2, f->count, 255,255,255);
+                    }
+                }
+            }
+        }

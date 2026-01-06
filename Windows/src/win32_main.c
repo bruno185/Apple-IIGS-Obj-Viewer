@@ -21,6 +21,9 @@ static float s_av = 20.0f;
 static float s_aw = 0.0f;
 static float s_dist = 300.0f;
 static float s_proj_scale = 100.0f; // angle_h, angle_v, angle_w, distance and projection scale (pixels per unit)
+
+// Diagnostic overlays
+static int g_show_inconclusive = 0; // toggled with 'I' key (on Win32)
 static int s_dump_on_load = 0; // if set, dump face equations CSV after async model load
 static ObsVertex* g_obs = NULL;
 static int* g_order = NULL;
@@ -88,7 +91,7 @@ static void compute_projection_and_order(HWND hwnd, int* out_winw, int* out_winh
         cx = 0.0f; cy = 0.0f;
     }
     // Avoid insanely large scales that push geometry far outside GDI coordinate range
-    const float MAX_PROJ_SCALE = 3000.0f;
+    const float MAX_PROJ_SCALE = 10000.0f;
     if (scale > MAX_PROJ_SCALE) scale = MAX_PROJ_SCALE;
 
     *out_cx = cx; *out_cy = cy; *out_scale = scale; *out_pxmin = pxmin; *out_pxmax = pxmax; *out_pymin = pymin; *out_pymax = pymax;
@@ -139,7 +142,7 @@ static void apply_auto_fit(HWND hwnd, Model* m, ObsVertex* obs) {
         s_proj_scale = (s1 < s2) ? s1 : s2;
     }
     // clamp to avoid excessive scaling
-    const float MAX_PROJ_SCALE = 3000.0f;
+    const float MAX_PROJ_SCALE = 10000.0f;
     if (s_proj_scale > MAX_PROJ_SCALE) s_proj_scale = MAX_PROJ_SCALE;
 
     extern void set_projection_params(float cx, float cy, float scale);
@@ -242,6 +245,26 @@ static void render_frame(HWND hwnd) {
                 int j=(k+1)%f->count; MoveToEx(memdc, pts[k].x, pts[k].y, NULL); LineTo(memdc, pts[j].x, pts[j].y);
             }
             SelectObject(memdc, oldp); DeleteObject(pen);
+        }
+    }
+
+    // Draw inconclusive pairs overlay (if enabled)
+    if (g_show_inconclusive && g_model) {
+        int cnt = get_inconclusive_pair_count(); int *pairs = get_inconclusive_pairs();
+        if (cnt > 0 && pairs) {
+            HPEN penI = CreatePen(PS_SOLID, 3, RGB(255,255,255)); HPEN oldpi = SelectObject(memdc, penI);
+            for (int pi = 0; pi < cnt; ++pi) {
+                int f1 = pairs[2*pi], f2 = pairs[2*pi+1];
+                if (f1 >= 0 && f1 < g_model->face_count) {
+                    Face* f = &g_model->faces[f1]; POINT pts[256]; for (int k=0;k<f->count;k++) { ObsVertex ov = g_obs[f->indices[k]]; project_to_screen((ov.zo==0.0f)?ov.xo:(ov.xo/ov.zo), (ov.zo==0.0f)?ov.yo:(ov.yo/ov.zo), winw, winh, scale, cx, cy, &pts[k]); }
+                    for (int k=0;k<f->count;k++) { int j=(k+1)%f->count; MoveToEx(memdc, pts[k].x, pts[k].y, NULL); LineTo(memdc, pts[j].x, pts[j].y); }
+                }
+                if (f2 >= 0 && f2 < g_model->face_count) {
+                    Face* f = &g_model->faces[f2]; POINT pts[256]; for (int k=0;k<f->count;k++) { ObsVertex ov = g_obs[f->indices[k]]; project_to_screen((ov.zo==0.0f)?ov.xo:(ov.xo/ov.zo), (ov.zo==0.0f)?ov.yo:(ov.yo/ov.zo), winw, winh, scale, cx, cy, &pts[k]); }
+                    for (int k=0;k<f->count;k++) { int j=(k+1)%f->count; MoveToEx(memdc, pts[k].x, pts[k].y, NULL); LineTo(memdc, pts[j].x, pts[j].y); }
+                }
+            }
+            SelectObject(memdc, oldpi); DeleteObject(penI);
         }
     }
 
@@ -354,6 +377,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 if (g_model) { display_model_face_ids(g_model); PostMessageW(hwnd, WM_MODEL_LOAD_LOG, 0, (LPARAM)_strdup("Inspector: display_model_face_ids executed\r\n")); }
                 InvalidateRect(hwnd, NULL, TRUE);
             }
+            else if (wParam == 'I') {
+                g_show_inconclusive = !g_show_inconclusive;
+                char msg[128]; snprintf(msg, sizeof(msg), "Inconclusive pairs overlay: %s\r\n", g_show_inconclusive ? "ON" : "OFF");
+                PostMessageW(hwnd, WM_MODEL_LOAD_LOG, 0, (LPARAM)_strdup(msg));
+                InvalidateRect(hwnd, NULL, TRUE);
+            }
             else if (wParam == '2') {
                 g_painter_order_version = 2;
                 PostMessageW(hwnd, WM_MODEL_LOAD_LOG, 0, (LPARAM)_strdup("Painter order: V2 selected\r\n"));
@@ -428,7 +457,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             }
             // Projection scale controls: handle keypad and OEM keys here; character handling in WM_CHAR
             else if (wParam == VK_ADD || wParam == VK_OEM_PLUS) {
-                s_proj_scale *= 1.1f; if (s_proj_scale > 2000.0f) s_proj_scale = 2000.0f; changed = 1;
+                s_proj_scale *= 1.1f; if (s_proj_scale > 10000.0f) s_proj_scale = 10000.0f; changed = 1;
             }
             else if (wParam == VK_SUBTRACT || wParam == VK_OEM_MINUS) {
                 s_proj_scale *= 0.9f; if (s_proj_scale < 1.0f) s_proj_scale = 1.0f; changed = 1;
@@ -440,7 +469,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     int n = ToAscii((UINT)wParam, sc, kb, &outch, 0);
                     if (n == 1) {
                         char ch = (char)outch;
-                        if (ch == '+') { s_proj_scale *= 1.1f; if (s_proj_scale > 2000.0f) s_proj_scale = 2000.0f; changed = 1; }
+                        if (ch == '+') { s_proj_scale *= 1.1f; if (s_proj_scale > 10000.0f) s_proj_scale = 10000.0f; changed = 1; }
                         else if (ch == '-') { s_proj_scale *= 0.9f; if (s_proj_scale < 1.0f) s_proj_scale = 1.0f; changed = 1; }
                     }
                 }
@@ -466,7 +495,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         {
             // Catch character-level '+' and '-' (layout-independent for shifted keys)
             if (wParam == '+' ) {
-                s_proj_scale *= 1.1f; if (s_proj_scale > 2000.0f) s_proj_scale = 2000.0f;
+                s_proj_scale *= 1.1f; if (s_proj_scale > 10000.0f) s_proj_scale = 10000.0f;
             } else if (wParam == '-') {
                 s_proj_scale *= 0.9f; if (s_proj_scale < 1.0f) s_proj_scale = 1.0f;
             } else if (wParam == 'A' || wParam == 'a') {
@@ -509,6 +538,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             // apply brute auto-fit: distance = 3 * max_dim; projection scale computed to fit window
             apply_auto_fit(hwnd, g_model, g_obs);
             // log and redraw
+            // reset inconclusive pairs between full recompute passes
+            clear_inconclusive_pairs();
             const char* tmp = getenv("TEMP"); char logfn[1024]; if (tmp) snprintf(logfn, sizeof(logfn), "%s\\viewer_win32.log", tmp); else snprintf(logfn, sizeof(logfn), "viewer_win32.log"); FILE* lf = fopen(logfn, "a"); if (lf) { fprintf(lf, "ASYNC LOAD: Loaded model verts=%d faces=%d\n", g_model->vert_count, g_model->face_count); fclose(lf); }
             InvalidateRect(hwnd, NULL, TRUE);
             // optionally dump face equations for debugging parity with GS3Dp
@@ -868,6 +899,15 @@ static LRESULT CALLBACK ParamsWndProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM 
         // future versions can be added here
         int sel = (g_painter_order_version == 2) ? 1 : (g_painter_order_version == 3) ? 2 : (g_painter_order_version == 4) ? 3 : 0;
         SendMessageW(hComboPainter, CB_SETCURSEL, (WPARAM)sel, 0);
+
+        // painter mode combo (GS3Dp FAST / FIXED / FLOAT equivalence)
+        HWND hComboPainterMode = CreateWindowExW(0, L"COMBOBOX", NULL, WS_CHILD|WS_VISIBLE|CBS_DROPDOWNLIST|WS_VSCROLL, 140,240,180,120,dlg,(HMENU)108,GetModuleHandle(NULL),NULL);
+        SendMessageW(hComboPainterMode, CB_ADDSTRING, 0, (LPARAM)L"FAST - simple sort (fast)");
+        SendMessageW(hComboPainterMode, CB_ADDSTRING, 0, (LPARAM)L"FIXED - Fixed32 pipeline");
+        SendMessageW(hComboPainterMode, CB_ADDSTRING, 0, (LPARAM)L"FLOAT - float painter");
+        int pmode = (g_painter_mode == PAINTER_MODE_FIXED) ? 1 : (g_painter_mode == PAINTER_MODE_FLOAT) ? 2 : 0;
+        SendMessageW(hComboPainterMode, CB_SETCURSEL, (WPARAM)pmode, 0);
+
         // labels
         CreateWindowExW(0, L"STATIC", L"Angle H:", WS_CHILD|WS_VISIBLE, 20,20,110,24,dlg,NULL,GetModuleHandle(NULL),NULL);
         CreateWindowExW(0, L"STATIC", L"Angle V:", WS_CHILD|WS_VISIBLE, 20,60,110,24,dlg,NULL,GetModuleHandle(NULL),NULL);
@@ -875,9 +915,10 @@ static LRESULT CALLBACK ParamsWndProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM 
         CreateWindowExW(0, L"STATIC", L"Distance:", WS_CHILD|WS_VISIBLE, 20,140,110,24,dlg,NULL,GetModuleHandle(NULL),NULL);
         CreateWindowExW(0, L"STATIC", L"Projection scale:", WS_CHILD|WS_VISIBLE, 20,180,110,24,dlg,NULL,GetModuleHandle(NULL),NULL);
         CreateWindowExW(0, L"STATIC", L"Painter order:", WS_CHILD|WS_VISIBLE, 20,210,110,24,dlg,NULL,GetModuleHandle(NULL),NULL);
-        // buttons (lowered) - moved down to fit combo
-        CreateWindowExW(0, L"BUTTON", L"OK", WS_CHILD|WS_VISIBLE|BS_DEFPUSHBUTTON, 60,260,90,28,dlg,(HMENU)201,GetModuleHandle(NULL),NULL);
-        CreateWindowExW(0, L"BUTTON", L"Cancel", WS_CHILD|WS_VISIBLE, 200,260,90,28,dlg,(HMENU)202,GetModuleHandle(NULL),NULL);
+        CreateWindowExW(0, L"STATIC", L"Painter mode:", WS_CHILD|WS_VISIBLE, 20,240,110,24,dlg,NULL,GetModuleHandle(NULL),NULL);
+        // buttons (moved down to fit extra combo)
+        CreateWindowExW(0, L"BUTTON", L"OK", WS_CHILD|WS_VISIBLE|BS_DEFPUSHBUTTON, 60,300,90,28,dlg,(HMENU)201,GetModuleHandle(NULL),NULL);
+        CreateWindowExW(0, L"BUTTON", L"Cancel", WS_CHILD|WS_VISIBLE, 200,300,90,28,dlg,(HMENU)202,GetModuleHandle(NULL),NULL);
         return 0;
     }
     if (msg == WM_COMMAND) {
@@ -896,6 +937,15 @@ static LRESULT CALLBACK ParamsWndProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM 
                 char* msg = _strdup("Painter order selection changed via Parameters dialog\r\n");
                 HWND ownerWnd = GetWindow(dlg, GW_OWNER); if (!ownerWnd) ownerWnd = GetParent(dlg); if (!ownerWnd) ownerWnd = GetAncestor(dlg, GA_ROOTOWNER);
                 if (ownerWnd) PostMessageW(ownerWnd, WM_MODEL_LOAD_LOG, 0, (LPARAM)msg); else free(msg);
+            }
+            // painter mode selection from combo (ID 108)
+            int psel = (int)SendMessageW((HWND)GetDlgItem(dlg, 108), CB_GETCURSEL, 0, 0);
+            if (psel >= 0) {
+                // Map combo index 0->FAST, 1->FIXED, 2->FLOAT
+                set_painter_mode(psel);
+                char* msg2 = _strdup("Painter mode selection changed via Parameters dialog\r\n");
+                HWND ownerWnd2 = GetWindow(dlg, GW_OWNER); if (!ownerWnd2) ownerWnd2 = GetParent(dlg); if (!ownerWnd2) ownerWnd2 = GetAncestor(dlg, GA_ROOTOWNER);
+                if (ownerWnd2) PostMessageW(ownerWnd2, WM_MODEL_LOAD_LOG, 0, (LPARAM)msg2); else free(msg2);
             }
             // normalize angles to [0,360)
             s_ah = normalize_angle360(s_ah); s_av = normalize_angle360(s_av); s_aw = normalize_angle360(s_aw);

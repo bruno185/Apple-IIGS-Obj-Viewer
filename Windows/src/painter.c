@@ -84,6 +84,30 @@ static void project_vertex(ObsVertex* v, float* px, float* py) {
     *px = v->xo / v->zo; *py = v->yo / v->zo;
 }
 
+// Provide a small screen-coordinate helper for the Win32 build (renderer.c is not part of WIN32 target)
+void screen_coords_from_proj(float px, float py, int winw, int winh, float scale, float centerx, float centery, int* sx, int* sy) {
+    *sx = (int)(winw*0.5f + (px - centerx) * scale);
+    *sy = (int)(winh*0.5f - (py - centery) * scale);
+}
+
+// Forward declarations used by the inspector (avoid implicit-int conflicts)
+int projected_polygons_overlap(Model* m, int f1, int f2);
+void set_highlight_faces(int* faces, int count, int color);
+
+// Simple interactive inspector wrapper (console) to match GS3Dp's inspect_polygons_overlap behaviour
+void inspect_polygons_overlap(Model* m, void* params_unused, const char* filename) {
+    if (!m) { printf("No model loaded\n"); return; }
+    printf("Enter two face IDs (f1 f2) or empty to cancel: "); char buf[128]; if (fgets(buf, sizeof(buf), stdin)) {
+        int f1=-1,f2=-1; if (sscanf(buf, "%d %d", &f1, &f2) == 2) {
+            int ov = projected_polygons_overlap(m, f1, f2);
+            printf("Projected overlap: %s\n", ov ? "YES" : "NO");
+            if (ov) {
+                printf("Press Y to preview highlighting faces, any other key to skip: "); int c = getchar(); if (c=='Y' || c=='y') { int arr[2] = {f1,f2}; set_highlight_faces(arr, 2, 10); }
+            }
+        } else { printf("Invalid input\n"); }
+    }
+}
+
 /* per-instr trace file pointer (declared before helper so helper can reference it) */
 static FILE* g_v4_pvf = NULL; /* optional per-instruction trace file (set by V4 when opened) */
 
@@ -100,6 +124,67 @@ static Model* g_model = NULL; static ObsVertex* g_obsv = NULL; // for comparator
 /* Runtime selection: 1 = original adjacent-swap (V1), 2 = pairwise compare (V2) */
 int g_painter_order_version = 1;
 
+// Painter mode selection to match GS3Dp (FAST/FIXED/FLOAT)
+int g_painter_mode = 0; /* default = PAINTER_MODE_FAST */
+void set_painter_mode(int mode) {
+    if (mode < 0 || mode > 2) return;
+    g_painter_mode = mode;
+    // If there were mode-specific flags (e.g., float pipeline), set them here
+    // (Currently we only record the mode; future work can switch algorithms.)
+    char buf[128]; snprintf(buf, sizeof(buf), "Painter mode set to %d\r\n", g_painter_mode);
+    if (g_model) {
+        // send a small log if window present
+        FILE* lf = fopen("viewer_win32.log", "a"); if (lf) { fprintf(lf, "%s", buf); fclose(lf); }
+    }
+}
+
+/* Runtime back-face culling toggle - default enabled (match GS3Dp behavior)
+   Use set_cull_back_faces/get_cull_back_faces to toggle at runtime from the UI */
+static int s_cull_back_faces = 1;
+void set_cull_back_faces(int v) { s_cull_back_faces = v ? 1 : 0; }
+int get_cull_back_faces(void) { return s_cull_back_faces; }
+
+/* Highlighting helpers (used by inspectors to preview faces) */
+static int* g_highlight_faces = NULL; static int g_highlight_count = 0; static int g_highlight_color = 0;
+void set_highlight_faces(int* faces, int count, int color) {
+    if (g_highlight_faces) free(g_highlight_faces);
+    if (count <= 0) { g_highlight_faces = NULL; g_highlight_count = 0; g_highlight_color = 0; return; }
+    g_highlight_faces = (int*)malloc(sizeof(int) * count);
+    memcpy(g_highlight_faces, faces, sizeof(int) * count);
+    g_highlight_count = count; g_highlight_color = color;
+}
+void clear_highlight_faces(void) { if (g_highlight_faces) free(g_highlight_faces); g_highlight_faces = NULL; g_highlight_count = 0; g_highlight_color = 0; }
+int face_is_highlighted(int f) { for (int i=0;i<g_highlight_count;i++) if (g_highlight_faces[i]==f) return g_highlight_color; return 0; }
+
+/* Inconclusive pair buffer: collect pairs of faces where the painter tests are inconclusive
+   so they can be highlighted later for diagnostics. Stored as pairs [f1,f2, f1,f2, ...] */
+static int* g_inconclusive_pairs = NULL; static int g_inconclusive_count = 0; static int g_inconclusive_capacity = 0;
+
+void clear_inconclusive_pairs(void) {
+    if (g_inconclusive_pairs) free(g_inconclusive_pairs);
+    g_inconclusive_pairs = NULL; g_inconclusive_count = 0; g_inconclusive_capacity = 0;
+}
+
+void add_inconclusive_pair(int f1, int f2) {
+    if (f1 < 0 || f2 < 0) return;
+    // Avoid duplicates (unordered pair)
+    for (int i = 0; i < g_inconclusive_count; ++i) {
+        int a = g_inconclusive_pairs[2*i], b = g_inconclusive_pairs[2*i+1];
+        if ((a==f1 && b==f2) || (a==f2 && b==f1)) return; // already recorded
+    }
+    if (g_inconclusive_count + 1 > g_inconclusive_capacity) {
+        int newcap = (g_inconclusive_capacity == 0) ? 8 : g_inconclusive_capacity * 2;
+        g_inconclusive_pairs = (int*)realloc(g_inconclusive_pairs, sizeof(int) * 2 * newcap);
+        g_inconclusive_capacity = newcap;
+    }
+    g_inconclusive_pairs[2 * g_inconclusive_count] = f1;
+    g_inconclusive_pairs[2 * g_inconclusive_count + 1] = f2;
+    g_inconclusive_count++;
+}
+
+int get_inconclusive_pair_count(void) { return g_inconclusive_count; }
+int* get_inconclusive_pairs(void) { return g_inconclusive_pairs; }
+
 /* point_in_triangle removed to match ORCA/GS3Dp (no local per-triangle depth tests there) */
 
 // Quick comparator for initial qsort by z_mean descending (stable tie-breaker by index)
@@ -107,6 +192,78 @@ static int compar_face_qsort(const void* pa, const void* pb) {
     int a = *(const int*)pa; int b = *(const int*)pb;
     float za = g_model->faces[a].z_mean; float zb = g_model->faces[b].z_mean;
     if (za > zb) return -1; if (za < zb) return 1; if (a < b) return -1; if (a > b) return 1; return 0;
+}
+
+/* Helper: determine whether face f1 should be before face f2 according to
+   the same Tests 4..7 used by the painter. Returns 1 if f1 should be before f2,
+   -1 if f2 should be before f1, 0 if inconclusive. */
+static int face_should_be_before(Model* m, int f1, int f2) {
+    if (!m) return 0;
+    // quick z-range checks
+    if (m->faces[f2].z_max <= m->faces[f1].z_min) return 1;   // f1 in front (no swap needed)
+    if (m->faces[f1].z_max <= m->faces[f2].z_min) return -1;  // f2 in front (swap)
+    // bbox quick rejection
+    if (m->faces[f1].maxx <= m->faces[f2].minx || m->faces[f2].maxx <= m->faces[f1].minx) return 0;
+    if (m->faces[f1].maxy <= m->faces[f2].miny || m->faces[f2].maxy <= m->faces[f1].miny) return 0;
+    // Use plane coeffs and Devant/Derriere style tests
+    float a1 = m->faces[f1].plane_a, b1 = m->faces[f1].plane_b, c1 = m->faces[f1].plane_c, d1 = m->faces[f1].plane_d;
+    float a2 = m->faces[f2].plane_a, b2 = m->faces[f2].plane_b, c2 = m->faces[f2].plane_c, d2 = m->faces[f2].plane_d;
+    int n1 = m->faces[f1].count, n2 = m->faces[f2].count;
+    // Test 6: if f2 opposite side wrt plane f1 -> f2 behind f1 => f1 should be before f2 (return 1)
+    float maxabs6 = fabsf(d1); for (int kk=0; kk<n2; ++kk) { int v = m->faces[f2].indices[kk]; float tv = a1 * g_obsv[v].xo + b1 * g_obsv[v].yo + c1 * g_obsv[v].zo + d1; if (fabsf(tv) > maxabs6) maxabs6 = fabsf(tv); }
+    float eps_rel6 = maxabs6 * 1e-6f; if (eps_rel6 < 0.0001f) eps_rel6 = 0.0001f;
+    int pos6=0, neg6=0; for (int kk=0; kk<n2; ++kk) { int v = m->faces[f2].indices[kk]; float tv = a1 * g_obsv[v].xo + b1 * g_obsv[v].yo + c1 * g_obsv[v].zo + d1; if (tv > eps_rel6) pos6++; else if (tv < -eps_rel6) neg6++; }
+    int thr6 = (3 * n2 + 3) / 4; if ((d1 > eps_rel6 && neg6 >= thr6) || (d1 < -eps_rel6 && pos6 >= thr6)) return 1;
+    // Test 7: if f1 same side wrt plane f2 -> swap
+    float maxabs7 = fabsf(d2); for (int kk=0; kk<n1; ++kk) { int v = m->faces[f1].indices[kk]; float tv = a2 * g_obsv[v].xo + b2 * g_obsv[v].yo + c2 * g_obsv[v].zo + d2; if (fabsf(tv) > maxabs7) maxabs7 = fabsf(tv); }
+    float eps_rel7 = maxabs7 * 1e-6f; if (eps_rel7 < 0.0001f) eps_rel7 = 0.0001f;
+    int pos7=0, neg7=0; for (int kk=0; kk<n1; ++kk) { int v = m->faces[f1].indices[kk]; float tv = a2 * g_obsv[v].xo + b2 * g_obsv[v].yo + c2 * g_obsv[v].zo + d2; if (tv > eps_rel7) pos7++; else if (tv < -eps_rel7) neg7++; }
+    int thr7 = (3 * n1 + 3) / 4; if ((d2 > eps_rel7 && pos7 >= thr7) || (d2 < -eps_rel7 && neg7 >= thr7)) return -1;
+    return 0; // inconclusive
+}
+
+/* Simple interactive inspectors (console based): ask for face id and report mismatches
+   They also set highlight faces for preview via set_highlight_faces(). */
+void inspect_faces_before(Model* m) {
+    if (!m) { printf("No model loaded\n"); return; }
+    printf("Enter target face id (or empty to cancel): "); char buf[128]; if (!fgets(buf, sizeof(buf), stdin)) return; int target = -1; if (sscanf(buf, "%d", &target) != 1) { printf("Cancelled\n"); return; }
+    if (target < 0 || target >= m->face_count) { printf("Invalid face id\n"); return; }
+    // Build current order by mean depth
+    int* order = (int*)malloc(sizeof(int)*m->face_count); for (int i=0;i<m->face_count;i++) order[i] = i; qsort(order, m->face_count, sizeof(int), compar_face_qsort);
+    // Find faces that are placed BEFORE target but should be AFTER
+    int misplaced_count = 0; int *misplaced = (int*)malloc(sizeof(int)*m->face_count);
+    for (int i=0;i<m->face_count;i++) {
+        int f = order[i]; if (f==target) break; // only faces before target
+        int res = face_should_be_before(m, f, target);
+        if (res == -1) { misplaced[misplaced_count++] = f; }
+    }
+    printf("Found %d faces BEFORE target that should be AFTER\n", misplaced_count);
+    if (misplaced_count>0) {
+        for (int i=0;i<misplaced_count;i++) printf("  %d\n", misplaced[i]);
+        set_highlight_faces(misplaced, misplaced_count, 6); // orange
+    }
+    free(misplaced); free(order);
+}
+
+void inspect_faces_after(Model* m) {
+    if (!m) { printf("No model loaded\n"); return; }
+    printf("Enter target face id (or empty to cancel): "); char buf[128]; if (!fgets(buf, sizeof(buf), stdin)) return; int target = -1; if (sscanf(buf, "%d", &target) != 1) { printf("Cancelled\n"); return; }
+    if (target < 0 || target >= m->face_count) { printf("Invalid face id\n"); return; }
+    int* order = (int*)malloc(sizeof(int)*m->face_count); for (int i=0;i<m->face_count;i++) order[i] = i; qsort(order, m->face_count, sizeof(int), compar_face_qsort);
+    int misplaced_count = 0; int *misplaced = (int*)malloc(sizeof(int)*m->face_count);
+    int seen_target = 0;
+    for (int i=0;i<m->face_count;i++) {
+        int f = order[i]; if (f==target) { seen_target = 1; continue; }
+        if (!seen_target) continue;
+        int res = face_should_be_before(m, f, target);
+        if (res == 1) { misplaced[misplaced_count++] = f; }
+    }
+    printf("Found %d faces AFTER target that should be BEFORE\n", misplaced_count);
+    if (misplaced_count>0) {
+        for (int i=0;i<misplaced_count;i++) printf("  %d\n", misplaced[i]);
+        set_highlight_faces(misplaced, misplaced_count, 12); // pink-ish
+    }
+    free(misplaced); free(order);
 }
 
 /* face_depth_at_point_tri removed to match ORCA/GS3Dp (no local per-triangle depth tests there) */
@@ -120,7 +277,8 @@ static void calculateFaceDepths(Model* model) {
             int vid = face->indices[k]; if (vid < 0 || vid >= model->vert_count) continue;
             ObsVertex ov = g_obsv[vid];
             float zo = ov.zo;
-            if (zo < 0.0f) display_flag = 0;
+            /* Back-face culling optional: when enabled, faces with any vertex zo < 0 are marked non-displayable */
+            if (s_cull_back_faces && zo < 0.0f) display_flag = 0;
             if (zo < zmin) zmin = zo;
             if (zo > zmax) zmax = zo;
             sum += zo;
@@ -448,6 +606,7 @@ int compute_painter_order_V1(Model* m, int* order_out) {
                     goto do_swap;
                 } else {
                     /* inconclusive */
+                    add_inconclusive_pair(f1, f2);
                     goto skipT7;
                 }
 
@@ -580,7 +739,7 @@ int compute_painter_order_V2(Model* m, int* order_out) {
                 obs_side2 = 0; if (d2 > eps_rel7) obs_side2 = 1; else if (d2 < -eps_rel7) obs_side2 = -1; else goto skipT7_v2;
                 int pos7 = 0, neg7 = 0, zero7 = 0; for (int kk = 0; kk < n1; kk++) { int v = m->faces[f1].indices[kk]; float tv = a2 * g_obsv[v].xo + b2 * g_obsv[v].yo + c2 * g_obsv[v].zo + d2; if (fabsf(tv) <= eps_rel7) zero7++; else if (tv > 0) pos7++; else neg7++; }
                 int thr7 = (3 * n1 + 3) / 4;
-                if ((obs_side2 == 1 && pos7 >= thr7) || (obs_side2 == -1 && neg7 >= thr7)) { goto do_swap_v2; } else { goto skipT7_v2; }
+                if ((obs_side2 == 1 && pos7 >= thr7) || (obs_side2 == -1 && neg7 >= thr7)) { goto do_swap_v2; } else { add_inconclusive_pair(f1,f2); goto skipT7_v2; }
 
             do_swap_v2: {
                 int a = order_out[i]; int b = order_out[j]; order_out[i] = b; order_out[j] = a; if (ordered_pairs != NULL && ordered_pairs_count < ordered_pairs_capacity) { ordered_pairs[ordered_pairs_count].face1 = order_out[i]; ordered_pairs[ordered_pairs_count].face2 = order_out[j]; ordered_pairs_count++; }
@@ -713,6 +872,33 @@ static int limite_region_gdi(Model* m_local, int f1, int f2) {
     free(pt1); free(pt2);
     return (comb == NULLREGION) ? 1 : 0; // 1 = disjoint, 0 = overlap
 }
+
+/* Return 1 if two faces' projected polygons overlap (proper overlap), 0 otherwise */
+int projected_polygons_overlap(Model* m, int f1, int f2) {
+    if (!m) return 0;
+    if (f1 < 0 || f1 >= m->face_count || f2 < 0 || f2 >= m->face_count) return 0;
+    int disjoint = limite_region_gdi(m, f1, f2);
+    return disjoint ? 0 : 1;
+}
+
+/* Display simple face id markers and print centers to console for debugging */
+void display_model_face_ids(Model* m) {
+    if (!m) return;
+    ObsVertex* obs = (ObsVertex*)malloc(sizeof(ObsVertex) * m->vert_count);
+    compute_obs_vertices(m, obs);
+    printf("Face ID list (face:center_x,center_y in screen coords):\n");
+    for (int i=0;i<m->face_count;i++) {
+        Face* f = &m->faces[i]; if (f->count<=0) continue;
+        float cx = 0.0f, cy = 0.0f; int n = f->count;
+        for (int k=0;k<n;k++) { int vi = f->indices[k]; ObsVertex v = obs[vi]; float px = (v.zo==0.0f)?v.xo:(v.xo/v.zo); float py = (v.zo==0.0f)?v.yo:(v.yo/v.zo); cx += px; cy += py; }
+        cx /= (float)n; cy /= (float)n;
+        int sx, sy; screen_coords_from_proj(cx, cy, 1024, 768, s_proj_scale, s_proj_cx, s_proj_cy, &sx, &sy);
+        printf("%d: %d,%d\n", i, sx, sy);
+    }
+    free(obs);
+}
+
+
 
 /* Version 4: implement Delphi TestComplet algorithm
    - Initialize ordering by mean depth (qsort)
@@ -1010,6 +1196,8 @@ int compute_painter_order_V3(Model* m, int* order_out) {
 
 /* Wrapper dispatch: honor runtime selection set by '1'/'2' keys (default = V1) */
 int compute_painter_order(Model* m, int* order_out) {
+    // Reset inconclusive pairs buffer before each full order computation
+    clear_inconclusive_pairs();
     if (g_painter_order_version == 1) return compute_painter_order_V1(m, order_out);
     if (g_painter_order_version == 2) return compute_painter_order_V2(m, order_out);
     if (g_painter_order_version == 3) return compute_painter_order_V3(m, order_out);
