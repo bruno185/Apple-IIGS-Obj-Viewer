@@ -1319,8 +1319,6 @@ void painter_newell_sancha(Model3D* model, int face_count) {
 }
 
 
-
-
 /* Float-based painter: reproduces Windows numeric behaviour exactly
    Implemented as non-destructive function; enable via env var USE_FLOAT_PAINTER=1 */
 
@@ -2176,7 +2174,7 @@ void inspect_faces_before(Model3D* model, ObserverParams* params, const char* fi
     // 1) Show entire model in wireframe
     int old_frame = framePolyOnly;
     framePolyOnly = 1; // wireframe
-    processModelWireframe(model, params, filename);
+    // processModelWireframe(model, params, filename);
     drawPolygons(model, faces->vertex_count, faces->face_count, model->vertices.vertex_count);
 
 
@@ -2332,7 +2330,7 @@ void inspect_faces_after(Model3D* model, ObserverParams* params, const char* fil
 
     int old_frame = framePolyOnly;
     framePolyOnly = 1; // wireframe
-    processModelWireframe(model, params, filename);
+    // processModelWireframe(model, params, filename);
     drawPolygons(model, faces->vertex_count, faces->face_count, model->vertices.vertex_count);
 
     for (int i = 0; i < after_count; ++i) {
@@ -2412,17 +2410,18 @@ void inspect_polygons_overlap(Model3D* model, ObserverParams* params, const char
     int old_frame = framePolyOnly;
     framePolyOnly = 1; // not filled
 
-    // Hide all, show only selected faces
-    for (int i = 0; i < faces->face_count; ++i) faces->display_flag[i] = 0;
-    faces->display_flag[f1] = 1;
-    faces->display_flag[f2] = 1;
-
-    processModelWireframe(model, params, filename);
+    // Show the entire model in wireframe first, then overlay the two faces
+    for (int i = 0; i < faces->face_count; ++i) faces->display_flag[i] = 1; // ensure all faces visible for wireframe
     drawPolygons(model, faces->vertex_count, faces->face_count, model->vertices.vertex_count);
 
-    // Overlay explicit colored faces (ensure visibility); show indices for both
+    // Overlay explicit colored faces (ensure visibility); force the two faces visible and draw indices
+    unsigned char saved_f1 = faces->display_flag[f1]; unsigned char saved_f2 = faces->display_flag[f2];
+    faces->display_flag[f1] = 1;
+    faces->display_flag[f2] = 1;
     drawFace(model, f1, 10, 1); // green with index
     drawFace(model, f2, 6, 1);  // orange with index
+    // restore (though we restore all flags later from backup)
+    faces->display_flag[f1] = saved_f1; faces->display_flag[f2] = saved_f2;
 
     MoveTo(5, 195);
     printf("Press any key to return\n");
@@ -2461,15 +2460,46 @@ void display_model_face_ids(Model3D* model, ObserverParams* params, const char* 
     int old_frame = framePolyOnly;
     framePolyOnly = 1; // wireframe for clear labels
 
-    // Ensure all faces visible
-    for (int i = 0; i < faces->face_count; ++i) faces->display_flag[i] = 1;
-
-    processModelWireframe(model, params, filename);
     drawPolygons(model, faces->vertex_count, faces->face_count, model->vertices.vertex_count);
 
-    // Draw each face with index shown in center
-    for (int f = 0; f < faces->face_count; ++f) {
-        if (faces->display_flag[f]) drawFace(model, f, 10, 1);
+    int screenScale = mode / 320;
+    // Draw each face in the current sorted order (use existing faces->sorted_face_indices)
+    for (int si = 0; si < faces->face_count; ++si) {
+        int f = faces->sorted_face_indices[si];
+        if (!faces->display_flag[f]) continue;
+        // Draw face filled with green (fillPenPat = 10)
+        drawFace(model, f, 10, 0);
+
+        // Compute integer bounding box center (use same logic as drawFace)
+        int offset = faces->vertex_indices_ptr[f];
+        int n = faces->vertex_count[f];
+        int min_x = 999999, max_x = -999999, min_y = 999999, max_y = -999999;
+        for (int k = 0; k < n; ++k) {
+            int vi = faces->vertex_indices_buffer[offset + k] - 1;
+            if (vi < 0 || vi >= model->vertices.vertex_count) continue;
+            int x = model->vertices.x2d[vi];
+            int y = model->vertices.y2d[vi];
+            if (x < min_x) min_x = x; if (x > max_x) max_x = x; if (y < min_y) min_y = y; if (y > max_y) max_y = y;
+        }
+        if (min_x <= max_x && min_y <= max_y) {
+            int center_x = (min_x + max_x) / 2;
+            int center_y = (min_y + max_y) / 2;
+            int screenCx = screenScale * center_x;
+            int screenCy = center_y;
+
+            char tmp[32];
+            int len = snprintf(tmp, sizeof(tmp), "%d", f);
+            if (len > 15) len = 15;
+            unsigned char pstr[16];
+            pstr[0] = (unsigned char)len;
+            memcpy(&pstr[1], tmp, len);
+
+            // Draw index in green
+            SetSolidPenPat(10);
+            MoveTo(screenCx, screenCy);
+            DrawString(pstr);
+            SetSolidPenPat(14);
+        }
     }
 
     MoveTo(5, 195);
@@ -3154,90 +3184,6 @@ void processModelFast(Model3D* model, ObserverParams* params, const char* filena
         const char* pname = (painter_mode==PAINTER_MODE_FAST)?"painter_newell_sancha_fast":(painter_mode==PAINTER_MODE_FIXED?"painter_newell_sancha":"painter_newell_sancha_float");
         printf("[TIMING] %s: %ld ticks (%.2f ms)\n", pname, elapsed, ms);
         keypress();
-    }
-}
-
-// Lightweight wireframe processing: only transform & project vertices, set face visibility
-// No per-face depth calculations or sorting performed here for maximum speed in wireframe mode
-segment "code11";
-void processModelWireframe(Model3D* model, ObserverParams* params, const char* filename) {
-    int i, j;
-    Fixed32 cos_h, sin_h, cos_v, sin_v, cos_w, sin_w;
-    Fixed32 x, y, z, zo, xo, yo;
-    Fixed32 inv_zo, x2d_temp, y2d_temp;
-
-    cos_h = cos_deg_int(params->angle_h);
-    sin_h = sin_deg_int(params->angle_h);
-    cos_v = cos_deg_int(params->angle_v);
-    sin_v = sin_deg_int(params->angle_v);
-    cos_w = cos_deg_int(params->angle_w);
-    sin_w = sin_deg_int(params->angle_w);
-
-    const Fixed32 cos_h_cos_v = FIXED_MUL_64(cos_h, cos_v);
-    const Fixed32 sin_h_cos_v = FIXED_MUL_64(sin_h, cos_v);
-    const Fixed32 cos_h_sin_v = FIXED_MUL_64(cos_h, sin_v);
-    const Fixed32 sin_h_sin_v = FIXED_MUL_64(sin_h, sin_v);
-    Fixed32 scale = s_global_proj_scale_fixed;
-    const Fixed32 centre_x_f = INT_TO_FIXED(CENTRE_X);
-    const Fixed32 centre_y_f = INT_TO_FIXED(CENTRE_Y);
-    const Fixed32 distance = params->distance;
-
-    VertexArrays3D* vtx = &model->vertices;
-    Fixed32 *x_arr = vtx->x, *y_arr = vtx->y, *z_arr = vtx->z;
-    Fixed32 *xo_arr = vtx->xo, *yo_arr = vtx->yo, *zo_arr = vtx->zo;
-    int *x2d_arr = vtx->x2d, *y2d_arr = vtx->y2d;
-    int vcount = vtx->vertex_count;
-
-    // Local copies for speed
-    FaceArrays3D* faces = &model->faces;
-    int *vertex_indices_buffer = faces->vertex_indices_buffer;
-    int *vertex_indices_ptr = faces->vertex_indices_ptr;
-    int *face_vertex_count = faces->vertex_count;
-
-    for (i = 0; i < vcount; i++) {
-        x = x_arr[i];
-        y = y_arr[i];
-        z = z_arr[i];
-        Fixed32 term1 = FIXED_MUL_64(x, cos_h_cos_v);
-        Fixed32 term2 = FIXED_MUL_64(y, sin_h_cos_v);
-        Fixed32 term3 = FIXED_MUL_64(z, sin_v);
-        zo = FIXED_ADD(FIXED_SUB(FIXED_SUB(FIXED_NEG(term1), term2), term3), distance);
-        if (zo > 0) {
-            // compute projected xy directly into x2d/y2d and store intermediate observer coords for depth tests
-            Fixed32 xo_local = FIXED_ADD(FIXED_NEG(FIXED_MUL_64(x, sin_h)), FIXED_MUL_64(y, cos_h));
-            Fixed32 yo_local = FIXED_ADD(FIXED_SUB(FIXED_NEG(FIXED_MUL_64(x, cos_h_sin_v)), FIXED_MUL_64(y, sin_h_sin_v)), FIXED_MUL_64(z, cos_v));
-            inv_zo = FIXED_DIV_64(scale, zo);
-            Fixed32 tmp_x = FIXED_ADD(FIXED_MUL_64(xo_local, inv_zo), centre_x_f);
-            Fixed32 tmp_y = FIXED_SUB(centre_y_f, FIXED_MUL_64(yo_local, inv_zo));
-            // apply screen rotation and round
-            x2d_arr[i] = FIXED_ROUND_TO_INT(FIXED_ADD(FIXED_SUB(FIXED_MUL_64(cos_w, FIXED_SUB(tmp_x, centre_x_f)), FIXED_MUL_64(sin_w, FIXED_SUB(centre_y_f, tmp_y))), centre_x_f));
-            y2d_arr[i] = FIXED_ROUND_TO_INT(FIXED_SUB(centre_y_f, FIXED_ADD(FIXED_MUL_64(sin_w, FIXED_SUB(tmp_x, centre_x_f)), FIXED_MUL_64(cos_w, FIXED_SUB(centre_y_f, tmp_y)))));
-            // Store observer-space coordinates so subsequent face tests see valid values
-            zo_arr[i] = zo;
-            xo_arr[i] = xo_local;
-            yo_arr[i] = yo_local;
-        } else {
-            // negative zo (behind camera) — mark as invalid projection and store zo<=0
-            zo_arr[i] = zo;
-            xo_arr[i] = 0;
-            yo_arr[i] = 0;
-            x2d_arr[i] = -1;
-            y2d_arr[i] = -1;
-        }
-    }
-
-    // Set simple visibility flag per face: visible if any vertex projected on-screen (x2d != -1)
-    for (i = 0; i < faces->face_count; ++i) {
-        int offset = vertex_indices_ptr[i];
-        int vcount_face = face_vertex_count[i];
-        int *indices_base = &vertex_indices_buffer[offset];
-        int visible = 0;
-        for (j = 0; j < vcount_face; ++j) {
-            int vi = indices_base[j] - 1;
-            if (vi >= 0 && vi < vcount && x2d_arr[vi] != -1) { visible = 1; break; }
-        }
-        faces->display_flag[i] = visible;
-        faces->sorted_face_indices[i] = i; // identity order; no sorting required
     }
 }
 
@@ -4466,7 +4412,8 @@ segment "code22";
         printf("Processing model...\n");
         if (framePolyOnly) {
             // Wireframe mode: only project vertices and set simple face visibility—skip face sorting
-            processModelWireframe(model, &params, filename);
+            // processModelWireframe(model, &params, filename);
+            drawPolygons(model, model->faces.vertex_count, model->faces.face_count, model->vertices.vertex_count);
         } else {
             processModelFast(model, &params, filename);
         }
@@ -4654,7 +4601,7 @@ segment "code22";
             case 111: // 'o'
                 if (model == NULL) { printf("No model loaded\n"); goto loopReDraw; }
                 inspect_polygons_overlap(model, &params, filename);
-                goto bigloop;
+                goto loopReDraw;
 
             case 76: // 'L' - show model with face ID labels at polygon centers
             case 108: // 'l'
@@ -4693,7 +4640,7 @@ case 112: // 'p'
                     // Switched back to filled polygons — re-run full processing to recompute depths & ordering
                     printf("Switching to filled mode: reprocessing model (sorting faces)...\n");
                     //processModelFast(model, &params, filename);
-                    goto bigloop;
+                    goto loopReDraw;
                 }
                 goto loopReDraw;
 
