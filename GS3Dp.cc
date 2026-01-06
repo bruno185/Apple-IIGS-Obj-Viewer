@@ -2174,7 +2174,7 @@ void inspect_faces_before(Model3D* model, ObserverParams* params, const char* fi
     // 1) Show entire model in wireframe
     int old_frame = framePolyOnly;
     framePolyOnly = 1; // wireframe
-    // processModelWireframe(model, params, filename);
+    // Wireframe preview: handled via the `framePolyOnly` flag and `drawPolygons()` (no separate `processModelWireframe()` function)
     drawPolygons(model, faces->vertex_count, faces->face_count, model->vertices.vertex_count);
 
 
@@ -2330,7 +2330,7 @@ void inspect_faces_after(Model3D* model, ObserverParams* params, const char* fil
 
     int old_frame = framePolyOnly;
     framePolyOnly = 1; // wireframe
-    // processModelWireframe(model, params, filename);
+    // Wireframe preview: handled via the `framePolyOnly` flag and `drawPolygons()` (no separate `processModelWireframe()` function)
     drawPolygons(model, faces->vertex_count, faces->face_count, model->vertices.vertex_count);
 
     for (int i = 0; i < after_count; ++i) {
@@ -2974,7 +2974,7 @@ void getObserverParams(ObserverParams* params, Model3D* model) {
     // Display section header
     printf("\nObserver parameters:\n");
     printf("============================\n");
-    printf("(Press ENTER to use default values - Distance will auto-fit the model)\n");
+    printf("(Press ENTER to use default values - apply suggested auto-fit if available)\n");
     
     // Input horizontal angle (rotation around Y)
     printf("Horizontal angle (degrees, default %d): ", params->angle_h);
@@ -3067,8 +3067,8 @@ void getObserverParams(ObserverParams* params, Model3D* model) {
  *    the final `sorted_face_indices` for rendering.
  *
  * Notes:
- *  - Autoscaling (fitModelToView) is **not** performed here; any autoscale must be applied
- *    before calling `processModelFast()` (e.g. at load time or via explicit user action).
+ *  - Autoscaling is **not** performed here; any autoscale (previously implemented in an archived helper) must be applied
+ *    before calling `processModelFast()` (e.g. at load time or via explicit user action). The archived helper's implementation is in `chutier.txt`.
  *  - The painter may only sort the visible faces when back-face culling is enabled. Culled
  *    faces are appended after visible faces to preserve index stability.
  *  - Timing instrumentation prints per-stage costs when not in PERFORMANCE_MODE.
@@ -4234,7 +4234,7 @@ static void show_help_pager(void) {
         "Space: Display model info",
         "A/Z: Increase/Decrease distance",
         "+/-: Increase/Decrease projection scale (pixels per projected unit)",
-        "K: Edit angles/distance (ENTER may trigger auto-fit)",
+        "K: Edit angles/distance (ENTER will apply suggested auto-fit if available)",
         "Arrow Left/Right: Decrease/Increase horizontal angle",
         "Arrow Up/Down: Increase/Decrease vertical angle",
         "W/X: Increase/Decrease screen rotation angle",
@@ -4242,7 +4242,6 @@ static void show_help_pager(void) {
         "1: Set painter to FAST (simple face sorting only)",
         "2: Set painter to NORMAL (Fixed32/64)",
         "3: Set painter to FLOAT (float-based)",
-        "F: Disabled (use 1/2/3 instead)",
         "P: Toggle frame-only polygons (default: OFF)",
         "B: Toggle back-face culling (observer-space D<=0)",
         "I: Toggle display of inconclusive face pairs",
@@ -4412,7 +4411,7 @@ segment "code22";
         printf("Processing model...\n");
         if (framePolyOnly) {
             // Wireframe mode: only project vertices and set simple face visibility—skip face sorting
-            // processModelWireframe(model, &params, filename);
+            // Wireframe handled via the `framePolyOnly` flag and `drawPolygons()` (no separate `processModelWireframe()` function)
             drawPolygons(model, model->faces.vertex_count, model->faces.face_count, model->vertices.vertex_count);
         } else {
             processModelFast(model, &params, filename);
@@ -4492,7 +4491,7 @@ segment "code22";
                 /* Revert disabled: no action performed on 'r'/'R' */
                 goto bigloop;
 
-            case 43:  // '+' - ensure auto-fit then increase distance by 10%
+            case 43:  // '+' - increase projection scale by 10% (applies to current scale)
             case 61:  // '=' also acts as '+' on some keyboards
                 if (model != NULL) {
                     // '+' now adjusts projection scale by +10%
@@ -4516,7 +4515,7 @@ segment "code22";
                 compute2DFromObserver(model, params.angle_w);
                 goto loopReDraw;
 
-            case 45:  // '-' - ensure auto-fit then decrease distance by 10%
+            case 45:  // '-' - decrease projection scale by 10% (applies to current scale)
                 if (model != NULL) {
                     // '-' now adjusts projection scale by -10%
                     Fixed32 cur = s_global_proj_scale_fixed;

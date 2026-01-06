@@ -215,16 +215,33 @@ static void render_frame(HWND hwnd) {
     // draw faces
     int offscreen_count = 0;
     for (int fi=0; fi<g_model->face_count; fi++) {
-        int fidx = g_order[fi]; Face* f = &g_model->faces[fidx]; POINT pts[256];
+        int fidx = g_order[fi]; Face* f = &g_model->faces[fidx]; POINT stack_pts[256]; POINT* pts = stack_pts; int pts_allocated = 0;
+        // Defensive: ensure face indices are valid before dereferencing g_obs
+        int valid_face = 1;
+        if (f->count <= 0) continue;
+        if (f->count > 256) {
+            // allocate dynamic buffer for large polygons to avoid stack overflow
+            pts = (POINT*)malloc(sizeof(POINT) * f->count);
+            if (!pts) { continue; }
+            pts_allocated = 1;
+        }
         for (int k=0;k<f->count;k++) {
-            int vi = f->indices[k]; ObsVertex ov = g_obs[vi]; float px = (ov.zo==0.0f)?ov.xo:(ov.xo/ov.zo); float py = (ov.zo==0.0f)?ov.yo:(ov.yo/ov.zo);
+            int vi = f->indices[k];
+            if (vi < 0 || vi >= g_model->vert_count) { valid_face = 0; break; }
+            ObsVertex ov = g_obs[vi]; float px = (ov.zo==0.0f)?ov.xo:(ov.xo/ov.zo); float py = (ov.zo==0.0f)?ov.yo:(ov.yo/ov.zo);
             project_to_screen(px, py, winw, winh, scale, cx, cy, &pts[k]);
+        }
+        if (!valid_face) {
+            // skip malformed face (already logged at load time where possible)
+            if (pts_allocated) free(pts);
+            continue;
         }
         // compute face screen bbox and track offscreen faces
         int fminx = pts[0].x, fmaxx = pts[0].x, fminy = pts[0].y, fmaxy = pts[0].y;
         for (int k=1;k<f->count;k++) { if (pts[k].x < fminx) fminx = pts[k].x; if (pts[k].x > fmaxx) fmaxx = pts[k].x; if (pts[k].y < fminy) fminy = pts[k].y; if (pts[k].y > fmaxy) fmaxy = pts[k].y; }
         int visible = !((fmaxx < 0) || (fminx >= winw) || (fmaxy < 0) || (fminy >= winh));
         if (!visible) offscreen_count++;
+
 
         // All faces use the same blue color
         COLORREF col = RGB(0, 122, 255);
@@ -256,12 +273,16 @@ static void render_frame(HWND hwnd) {
             for (int pi = 0; pi < cnt; ++pi) {
                 int f1 = pairs[2*pi], f2 = pairs[2*pi+1];
                 if (f1 >= 0 && f1 < g_model->face_count) {
-                    Face* f = &g_model->faces[f1]; POINT pts[256]; for (int k=0;k<f->count;k++) { ObsVertex ov = g_obs[f->indices[k]]; project_to_screen((ov.zo==0.0f)?ov.xo:(ov.xo/ov.zo), (ov.zo==0.0f)?ov.yo:(ov.yo/ov.zo), winw, winh, scale, cx, cy, &pts[k]); }
-                    for (int k=0;k<f->count;k++) { int j=(k+1)%f->count; MoveToEx(memdc, pts[k].x, pts[k].y, NULL); LineTo(memdc, pts[j].x, pts[j].y); }
+                    Face* f = &g_model->faces[f1]; POINT stack_pts[256]; POINT* pts = stack_pts; int pts_alloc = 0; if (f->count <= 0) continue; if (f->count > 256) { pts = (POINT*)malloc(sizeof(POINT)*f->count); if (!pts) continue; pts_alloc = 1; }
+                    for (int k=0;k<f->count;k++) { int vi = f->indices[k]; if (vi < 0 || vi >= g_model->vert_count) { pts_alloc ? free(pts) : 0; pts = NULL; break; } ObsVertex ov = g_obs[vi]; project_to_screen((ov.zo==0.0f)?ov.xo:(ov.xo/ov.zo), (ov.zo==0.0f)?ov.yo:(ov.yo/ov.zo), winw, winh, scale, cx, cy, &pts[k]); }
+                    if (pts) { for (int k=0;k<f->count;k++) { int j=(k+1)%f->count; MoveToEx(memdc, pts[k].x, pts[k].y, NULL); LineTo(memdc, pts[j].x, pts[j].y); } }
+                    if (pts_alloc) free(pts);
                 }
                 if (f2 >= 0 && f2 < g_model->face_count) {
-                    Face* f = &g_model->faces[f2]; POINT pts[256]; for (int k=0;k<f->count;k++) { ObsVertex ov = g_obs[f->indices[k]]; project_to_screen((ov.zo==0.0f)?ov.xo:(ov.xo/ov.zo), (ov.zo==0.0f)?ov.yo:(ov.yo/ov.zo), winw, winh, scale, cx, cy, &pts[k]); }
-                    for (int k=0;k<f->count;k++) { int j=(k+1)%f->count; MoveToEx(memdc, pts[k].x, pts[k].y, NULL); LineTo(memdc, pts[j].x, pts[j].y); }
+                    Face* f = &g_model->faces[f2]; POINT stack_pts[256]; POINT* pts = stack_pts; int pts_alloc = 0; if (f->count <= 0) continue; if (f->count > 256) { pts = (POINT*)malloc(sizeof(POINT)*f->count); if (!pts) continue; pts_alloc = 1; }
+                    for (int k=0;k<f->count;k++) { int vi = f->indices[k]; if (vi < 0 || vi >= g_model->vert_count) { pts_alloc ? free(pts) : 0; pts = NULL; break; } ObsVertex ov = g_obs[vi]; project_to_screen((ov.zo==0.0f)?ov.xo:(ov.xo/ov.zo), (ov.zo==0.0f)?ov.yo:(ov.yo/ov.zo), winw, winh, scale, cx, cy, &pts[k]); }
+                    if (pts) { for (int k=0;k<f->count;k++) { int j=(k+1)%f->count; MoveToEx(memdc, pts[k].x, pts[k].y, NULL); LineTo(memdc, pts[j].x, pts[j].y); } }
+                    if (pts_alloc) free(pts);
                 }
             }
             SelectObject(memdc, oldpi); DeleteObject(penI);
@@ -846,8 +867,9 @@ static LRESULT CALLBACK ParamsWndProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM 
         CreateWindowExW(0, L"STATIC", L"Projection scale:", WS_CHILD|WS_VISIBLE, 20,180,110,24,dlg,NULL,GetModuleHandle(NULL),NULL);
         CreateWindowExW(0, L"STATIC", L"Painter mode:", WS_CHILD|WS_VISIBLE, 20,210,110,24,dlg,NULL,GetModuleHandle(NULL),NULL);
         // buttons (moved down to fit extra combo)
-        CreateWindowExW(0, L"BUTTON", L"OK", WS_CHILD|WS_VISIBLE|BS_DEFPUSHBUTTON, 60,300,90,28,dlg,(HMENU)201,GetModuleHandle(NULL),NULL);
-        CreateWindowExW(0, L"BUTTON", L"Cancel", WS_CHILD|WS_VISIBLE, 200,300,90,28,dlg,(HMENU)202,GetModuleHandle(NULL),NULL);
+        CreateWindowExW(0, L"BUTTON", L"OK", WS_CHILD|WS_VISIBLE|BS_DEFPUSHBUTTON, 40,300,80,28,dlg,(HMENU)201,GetModuleHandle(NULL),NULL);
+        CreateWindowExW(0, L"BUTTON", L"Apply", WS_CHILD|WS_VISIBLE, 140,300,80,28,dlg,(HMENU)203,GetModuleHandle(NULL),NULL);
+        CreateWindowExW(0, L"BUTTON", L"Cancel", WS_CHILD|WS_VISIBLE, 240,300,80,28,dlg,(HMENU)202,GetModuleHandle(NULL),NULL);
         return 0;
     }
     if (msg == WM_COMMAND) {
@@ -893,6 +915,31 @@ static LRESULT CALLBACK ParamsWndProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM 
                 HWND active = GetActiveWindow(); if (active) render_frame(active);
             }
             DestroyWindow(dlg);
+            return 0;
+        } else if (id == 203) {
+            // Apply: apply parameters without closing dialog
+            wchar_t buf[64]; GetWindowTextW(hEditAH, buf, 64); s_ah = (float)wcstod(buf, NULL);
+            GetWindowTextW(hEditAV, buf, 64); s_av = (float)wcstod(buf, NULL);
+            GetWindowTextW(hEditAW, buf, 64); s_aw = (float)wcstod(buf, NULL);
+            GetWindowTextW(hEditDist, buf, 64); s_dist = (float)wcstod(buf, NULL);
+            GetWindowTextW((HWND)GetDlgItem(dlg, 106), buf, 64); s_proj_scale = (float)wcstod(buf, NULL);
+            if (s_proj_scale < 1.0f) s_proj_scale = 1.0f;
+            int psel = (int)SendMessageW((HWND)GetDlgItem(dlg, 108), CB_GETCURSEL, 0, 0);
+            if (psel >= 0) {
+                set_painter_mode(psel);
+                char* msg2 = _strdup("Painter mode selection applied via Parameters dialog\r\n");
+                HWND ownerWnd2 = GetWindow(dlg, GW_OWNER); if (!ownerWnd2) ownerWnd2 = GetParent(dlg); if (!ownerWnd2) ownerWnd2 = GetAncestor(dlg, GA_ROOTOWNER);
+                if (ownerWnd2) PostMessageW(ownerWnd2, WM_MODEL_LOAD_LOG, 0, (LPARAM)msg2); else free(msg2);
+            }
+            s_ah = normalize_angle360(s_ah); s_av = normalize_angle360(s_av); s_aw = normalize_angle360(s_aw);
+            set_observer_params(s_ah, s_av, s_aw, s_dist);
+            extern void set_projection_params(float cx, float cy, float scale);
+            set_projection_params(0.0f, 0.0f, s_proj_scale);
+            if (g_model && g_obs) { compute_obs_vertices(g_model, g_obs); if (g_order) compute_painter_order(g_model, g_order); }
+            HWND owner2 = GetWindow(dlg, GW_OWNER);
+            if (!owner2) owner2 = GetParent(dlg);
+            if (!owner2) owner2 = GetAncestor(dlg, GA_ROOTOWNER);
+            if (owner2) { InvalidateRect(owner2, NULL, TRUE); UpdateWindow(owner2); render_frame(owner2); }
             return 0;
         } else if (id == 202) { DestroyWindow(dlg); return 0; }
     }

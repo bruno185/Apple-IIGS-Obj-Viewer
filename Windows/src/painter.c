@@ -10,7 +10,7 @@
 // Minimal structures (mirrors those in obj.c)
 typedef struct { float x,y,z; } Vertex;
 // Extended Face struct to match GS3Dp: add plane coeffs, bbox and display flag
-typedef struct { int *indices; int count; float z_min,z_mean,z_max; float plane_a, plane_b, plane_c, plane_d; int minx, maxx, miny, maxy; int display_flag; } Face;
+typedef struct { int *indices; int count; float z_min,z_mean,z_max; float plane_a, plane_b, plane_c, plane_d; long long plane_a_i, plane_b_i, plane_c_i, plane_d_i; int minx, maxx, miny, maxy; int display_flag; } Face;
 typedef struct { Vertex* verts; int vert_count; Face* faces; int face_count; } Model;
 
 // Observer params (match GS3Dp semantics: angle_h, angle_v, angle_w, distance)
@@ -224,6 +224,78 @@ static int face_should_be_before(Model* m, int f1, int f2) {
     // bbox quick rejection
     if (m->faces[f1].maxx <= m->faces[f2].minx || m->faces[f2].maxx <= m->faces[f1].minx) return 0;
     if (m->faces[f1].maxy <= m->faces[f2].miny || m->faces[f2].maxy <= m->faces[f1].miny) return 0;
+    // If FIXED mode is selected, use integer Fixed arithmetic identical to GS3Dp for Tests 4..7
+    if (g_painter_mode == PAINTER_MODE_FIXED) {
+        int n1 = m->faces[f1].count, n2 = m->faces[f2].count;
+        long long a1_i = m->faces[f1].plane_a_i, b1_i = m->faces[f1].plane_b_i, c1_i = m->faces[f1].plane_c_i, d1_i = m->faces[f1].plane_d_i;
+        long long a2_i = m->faces[f2].plane_a_i, b2_i = m->faces[f2].plane_b_i, c2_i = m->faces[f2].plane_c_i, d2_i = m->faces[f2].plane_d_i;
+        // Fixed epsilon = FLOAT_TO_FIXED(0.01f)
+        int fixed_eps = (int)lroundf(0.01f * 65536.0f); long long eps64 = (long long)fixed_eps;
+        int k;
+        int obs_side1 = 0, obs_side2 = 0, side = 0, all_same_side = 0, all_opposite_side = 0;
+        // Test 4 (all same side -> f2 before f1)
+        obs_side1 = 0; if (d1_i > eps64) obs_side1 = 1; else if (d1_i < -eps64) obs_side1 = -1; else goto skipT4_fixed;
+        all_same_side = 1;
+        for (k = 0; k < n2; ++k) {
+            int v = m->faces[f2].indices[k]; int xo_i = (int)lroundf(g_obsv[v].xo * 65536.0f); int yo_i = (int)lroundf(g_obsv[v].yo * 65536.0f); int zo_i = (int)lroundf(g_obsv[v].zo * 65536.0f);
+            long long acc = 0;
+            acc  = (((long long)a1_i * (long long)xo_i) >> 16);
+            acc += (((long long)b1_i * (long long)yo_i) >> 16);
+            acc += (((long long)c1_i * (long long)zo_i) >> 16);
+            acc += (long long)d1_i;
+            if (acc > eps64) side = 1; else if (acc < -eps64) side = -1; else continue;
+            if (obs_side1 != side) { all_same_side = 0; break; }
+        }
+        if (all_same_side) return -1;
+    skipT4_fixed: ;
+        // Test 5 (all opposite side -> f2 before f1)
+        obs_side2 = 0; if (d2_i > eps64) obs_side2 = 1; else if (d2_i < -eps64) obs_side2 = -1; else goto skipT5_fixed;
+        all_opposite_side = 1;
+        for (k = 0; k < n1; ++k) {
+            int v = m->faces[f1].indices[k]; int xo_i = (int)lroundf(g_obsv[v].xo * 65536.0f); int yo_i = (int)lroundf(g_obsv[v].yo * 65536.0f); int zo_i = (int)lroundf(g_obsv[v].zo * 65536.0f);
+            long long acc = 0;
+            acc  = (((long long)a2_i * (long long)xo_i) >> 16);
+            acc += (((long long)b2_i * (long long)yo_i) >> 16);
+            acc += (((long long)c2_i * (long long)zo_i) >> 16);
+            acc += (long long)d2_i;
+            if (acc > eps64) side = 1; else if (acc < -eps64) side = -1; else continue;
+            if (obs_side2 == side) { all_opposite_side = 0; break; }
+        }
+        if (all_opposite_side) return -1;
+    skipT5_fixed: ;
+        // Test 6 (all opposite side -> swap)
+        obs_side1 = 0; if (d1_i > eps64) obs_side1 = 1; else if (d1_i < -eps64) obs_side1 = -1; else goto skipT6_fixed;
+        all_opposite_side = 1;
+        for (k = 0; k < n2; ++k) {
+            int v = m->faces[f2].indices[k]; int xo_i = (int)lroundf(g_obsv[v].xo * 65536.0f); int yo_i = (int)lroundf(g_obsv[v].yo * 65536.0f); int zo_i = (int)lroundf(g_obsv[v].zo * 65536.0f);
+            long long acc = 0;
+            acc  = (((long long)a1_i * (long long)xo_i) >> 16);
+            acc += (((long long)b1_i * (long long)yo_i) >> 16);
+            acc += (((long long)c1_i * (long long)zo_i) >> 16);
+            acc += (long long)d1_i;
+            if (acc > eps64) side = 1; else if (acc < -eps64) side = -1; else continue;
+            if (obs_side1 == side) { all_opposite_side = 0; break; }
+        }
+        if (all_opposite_side) return 1;
+    skipT6_fixed: ;
+        // Test 7 (all same side -> swap)
+        obs_side2 = 0; if (d2_i > eps64) obs_side2 = 1; else if (d2_i < -eps64) obs_side2 = -1; else goto skipT7_fixed;
+        all_same_side = 1;
+        for (k = 0; k < n1; ++k) {
+            int v = m->faces[f1].indices[k]; int xo_i = (int)lroundf(g_obsv[v].xo * 65536.0f); int yo_i = (int)lroundf(g_obsv[v].yo * 65536.0f); int zo_i = (int)lroundf(g_obsv[v].zo * 65536.0f);
+            long long acc = 0;
+            acc  = (((long long)a2_i * (long long)xo_i) >> 16);
+            acc += (((long long)b2_i * (long long)yo_i) >> 16);
+            acc += (((long long)c2_i * (long long)zo_i) >> 16);
+            acc += (long long)d2_i;
+            if (acc > eps64) side = 1; else if (acc < -eps64) side = -1; else continue;
+            if (obs_side2 != side) { all_same_side = 0; break; }
+        }
+        if (all_same_side) return 1;
+    skipT7_fixed: ;
+        return 0;
+    }
+
     // Use plane coeffs and Devant/Derriere style tests
     float a1 = m->faces[f1].plane_a, b1 = m->faces[f1].plane_b, c1 = m->faces[f1].plane_c, d1 = m->faces[f1].plane_d;
     float a2 = m->faces[f2].plane_a, b2 = m->faces[f2].plane_b, c2 = m->faces[f2].plane_c, d2 = m->faces[f2].plane_d;
@@ -356,6 +428,8 @@ static void calculateFaceDepths(Model* model) {
                         fprintf(g_v4_pvf, "fixed_face,%d,%d,%d,%d,%lld,%lld,%lld,%lld\n", i, x1f, y1f, z1f, a_f, b_f, c_f, d_f);
                     }
                 }
+                /* Save integer fixed-plane coeffs for FIXED-mode comparisons */
+                face->plane_a_i = a_f; face->plane_b_i = b_f; face->plane_c_i = c_f; face->plane_d_i = d_f;
                 /* Convert fixed to float (16.16) and apply V4 arrondi */
                 float a = (float)((double)a_f / 65536.0);
                 float b = (float)((double)b_f / 65536.0);

@@ -90,11 +90,21 @@ Model* load_obj(const char* path) {
         float zmin = 1e30f;
         float zmax = -1e30f;
         float sum = 0;
+        int valid = 1;
         for (int k = 0; k < face->count; k++) {
-            float z = m->verts[face->indices[k]].z;
+            int idx = face->indices[k];
+            // Validate index bounds to avoid crashes later when rendering
+            if (idx < 0 || idx >= m->vert_count) { valid = 0; break; }
+            float z = m->verts[idx].z;
             if (z < zmin) zmin = z;
             if (z > zmax) zmax = z;
             sum += z;
+        }
+        if (!valid) {
+            // Drop invalid face: free indices and mark count 0 so downstream code ignores it
+            free(face->indices); face->indices = NULL; face->count = 0;
+            face->z_min = face->z_max = face->z_mean = 0.0f;
+            continue;
         }
         face->z_min = zmin;
         face->z_max = zmax;
