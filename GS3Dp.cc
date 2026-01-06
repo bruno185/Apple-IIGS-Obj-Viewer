@@ -4589,13 +4589,13 @@ segment "code22";
             case 100: // 'd'
                 if (model == NULL) { printf("No model loaded\n"); goto loopReDraw; }
                 inspect_faces_before(model, &params, filename);
-                goto bigloop;
+                goto loopReDraw;
 
             case 83: // 'S' - inspect faces that are AFTER target but should be BEFORE (new)
             case 115: // 's'
                 if (model == NULL) { printf("No model loaded\n"); goto loopReDraw; }
                 inspect_faces_after(model, &params, filename);
-                goto bigloop;
+                goto loopReDraw;
 
             case 79: // 'O' - check projected polygon overlap
             case 111: // 'o'
@@ -4607,7 +4607,7 @@ segment "code22";
             case 108: // 'l'
                 if (model == NULL) { printf("No model loaded\n"); goto loopReDraw; }
                 display_model_face_ids(model, &params, filename);
-                goto bigloop;
+                goto loopReDraw;
 
             /* New: direct painter mode keys
              * '1' -> FAST, '2' -> NORMAL (Fixed), '3' -> FLOAT
