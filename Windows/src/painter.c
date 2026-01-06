@@ -125,16 +125,35 @@ static Model* g_model = NULL; static ObsVertex* g_obsv = NULL; // for comparator
 int g_painter_order_version = 1;
 
 // Painter mode selection to match GS3Dp (FAST/FIXED/FLOAT)
+#ifndef PAINTER_MODE_FAST
+#define PAINTER_MODE_FAST 0
+#define PAINTER_MODE_FIXED 1
+#define PAINTER_MODE_FLOAT 2
+#endif
 int g_painter_mode = 0; /* default = PAINTER_MODE_FAST */
 void set_painter_mode(int mode) {
     if (mode < 0 || mode > 2) return;
     g_painter_mode = mode;
-    // If there were mode-specific flags (e.g., float pipeline), set them here
-    // (Currently we only record the mode; future work can switch algorithms.)
-    char buf[128]; snprintf(buf, sizeof(buf), "Painter mode set to %d\r\n", g_painter_mode);
-    if (g_model) {
-        // send a small log if window present
-        FILE* lf = fopen("viewer_win32.log", "a"); if (lf) { fprintf(lf, "%s", buf); fclose(lf); }
+    // Map painter mode to internal ordering variant for parity with GS3Dp
+    if (g_painter_mode == PAINTER_MODE_FAST) g_painter_order_version = 1;
+    else if (g_painter_mode == PAINTER_MODE_FIXED) g_painter_order_version = 2;
+    else if (g_painter_mode == PAINTER_MODE_FLOAT) g_painter_order_version = 4;
+
+    char buf[128]; snprintf(buf, sizeof(buf), "Painter mode set to %d, order_version=%d\r\n", g_painter_mode, g_painter_order_version);
+    // write small log for diagnostics
+    FILE* lf = fopen("viewer_win32.log", "a"); if (lf) { fprintf(lf, "%s", buf); fclose(lf); }
+
+    // If a model is loaded, recompute observer vertices and painter order immediately
+    if (g_model && g_obsv) {
+        compute_obs_vertices(g_model, g_obsv);
+        // recompute order using the new ordering selection
+        // allocate an order buffer on stack if g_model->face_count is reasonable
+        int *ord = (int*)malloc(sizeof(int) * g_model->face_count);
+        if (ord) {
+            compute_painter_order(g_model, ord);
+            // If there is a global order buffer in the UI, it will be re-computed by caller; here we just leave recomputed result
+            free(ord);
+        }
     }
 }
 

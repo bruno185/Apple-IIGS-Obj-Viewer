@@ -339,30 +339,22 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 }
             }
             else if (wParam == '1') {
-                g_painter_order_version = 1;
-                PostMessageW(hwnd, WM_MODEL_LOAD_LOG, 0, (LPARAM)_strdup("Painter order: V1 selected\r\n"));
-                if (g_model) {
-                    int *ord = (int*)malloc(sizeof(int) * g_model->face_count);
-                    if (ord) {
-                        if (compute_painter_order(g_model, ord)) {
-                            char exe_path[MAX_PATH]; GetModuleFileNameA(NULL, exe_path, MAX_PATH); char exe_dir[MAX_PATH]; strncpy(exe_dir, exe_path, MAX_PATH); char* lastbs = strrchr(exe_dir, '\\'); if (lastbs) *lastbs = '\0'; char ofn[1024]; snprintf(ofn, sizeof(ofn), "%s\\equ_order_runtime_v1.csv", exe_dir);
-                            FILE* of = fopen(ofn, "w"); if (of) {
-                                fprintf(of, "# version,1,faces,%d\\n", g_model->face_count);
-                                for (int ii = 0; ii < g_model->face_count; ++ii) fprintf(of, "%d\\n", ord[ii]);
-                                fclose(of);
-                            }
-                            char logbuf[1024]; snprintf(logbuf, sizeof(logbuf), "Painter order: wrote %s\\r\\n", ofn);
-                            PostMessageW(hwnd, WM_MODEL_LOAD_LOG, 0, (LPARAM)_strdup(logbuf));
-                        }
-                        free(ord);
-                    }
-                }
+                set_painter_mode(PAINTER_MODE_FAST);
+                PostMessageW(hwnd, WM_MODEL_LOAD_LOG, 0, (LPARAM)_strdup("Painter mode: FAST selected\r\n"));
+                if (g_model && g_obs) { compute_obs_vertices(g_model, g_obs); if (g_order) compute_painter_order(g_model, g_order); }
                 InvalidateRect(hwnd, NULL, TRUE);
             }
             else if (wParam == 'B') {
                 set_cull_back_faces(!get_cull_back_faces());
                 char mmsg[128]; snprintf(mmsg, sizeof(mmsg), "Back-face culling: %s\r\n", get_cull_back_faces() ? "ON" : "OFF");
                 PostMessageW(hwnd, WM_MODEL_LOAD_LOG, 0, (LPARAM)_strdup(mmsg));
+                InvalidateRect(hwnd, NULL, TRUE);
+            }
+            else if (wParam == 'F') {
+                int next = (g_painter_mode + 1) % 3; set_painter_mode(next);
+                char buf[128]; snprintf(buf, sizeof(buf), "Painter mode toggled to %d\r\n", g_painter_mode);
+                PostMessageW(hwnd, WM_MODEL_LOAD_LOG, 0, (LPARAM)_strdup(buf));
+                if (g_model && g_obs) { compute_obs_vertices(g_model, g_obs); if (g_order) compute_painter_order(g_model, g_order); }
                 InvalidateRect(hwnd, NULL, TRUE);
             }
             else if (wParam == 'S' && (GetKeyState(VK_SHIFT) & 0x8000)) {
@@ -384,70 +376,18 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 InvalidateRect(hwnd, NULL, TRUE);
             }
             else if (wParam == '2') {
-                g_painter_order_version = 2;
-                PostMessageW(hwnd, WM_MODEL_LOAD_LOG, 0, (LPARAM)_strdup("Painter order: V2 selected\r\n"));
-                if (g_model) {
-                    int *ord = (int*)malloc(sizeof(int) * g_model->face_count);
-                    if (ord) {
-                        if (compute_painter_order(g_model, ord)) {
-                            char exe_path[MAX_PATH]; GetModuleFileNameA(NULL, exe_path, MAX_PATH); char exe_dir[MAX_PATH]; strncpy(exe_dir, exe_path, MAX_PATH); char* lastbs = strrchr(exe_dir, '\\'); if (lastbs) *lastbs = '\0'; char ofn[1024]; snprintf(ofn, sizeof(ofn), "%s\\equ_order_runtime_v2.csv", exe_dir);
-                            FILE* of = fopen(ofn, "w"); if (of) {
-                                fprintf(of, "# version,2,faces,%d\\n", g_model->face_count);
-                                for (int ii = 0; ii < g_model->face_count; ++ii) fprintf(of, "%d\\n", ord[ii]);
-                                fclose(of);
-                            }
-                            char logbuf[1024]; snprintf(logbuf, sizeof(logbuf), "Painter order: wrote %s\\r\\n", ofn);
-                            PostMessageW(hwnd, WM_MODEL_LOAD_LOG, 0, (LPARAM)_strdup(logbuf));
-                        }
-                        free(ord);
-                    }
-                }
+                set_painter_mode(PAINTER_MODE_FIXED);
+                PostMessageW(hwnd, WM_MODEL_LOAD_LOG, 0, (LPARAM)_strdup("Painter mode: FIXED selected\r\n"));
+                if (g_model && g_obs) { compute_obs_vertices(g_model, g_obs); if (g_order) compute_painter_order(g_model, g_order); }
                 InvalidateRect(hwnd, NULL, TRUE);
             }
             else if (wParam == '3') {
-                g_painter_order_version = 3;
-                PostMessageW(hwnd, WM_MODEL_LOAD_LOG, 0, (LPARAM)_strdup("Painter order: V3 selected\r\n"));
-                if (g_model) {
-                    int *ord = (int*)malloc(sizeof(int) * g_model->face_count);
-                    if (ord) {
-                        if (compute_painter_order(g_model, ord)) {
-                            char exe_path[MAX_PATH]; GetModuleFileNameA(NULL, exe_path, MAX_PATH); char exe_dir[MAX_PATH]; strncpy(exe_dir, exe_path, MAX_PATH); char* lastbs = strrchr(exe_dir, '\\'); if (lastbs) *lastbs = '\0'; char ofn[1024]; snprintf(ofn, sizeof(ofn), "%s\\equ_order_runtime_v3.csv", exe_dir);
-                            FILE* of = fopen(ofn, "w"); if (of) {
-                                fprintf(of, "# version,3,faces,%d\\n", g_model->face_count);
-                                for (int ii = 0; ii < g_model->face_count; ++ii) fprintf(of, "%d\\n", ord[ii]);
-                                fclose(of);
-                            }
-                            char logbuf[1024]; snprintf(logbuf, sizeof(logbuf), "Painter order: wrote %s\\r\\n", ofn);
-                            PostMessageW(hwnd, WM_MODEL_LOAD_LOG, 0, (LPARAM)_strdup(logbuf));
-                        }
-                        free(ord);
-                    }
-                }
+                set_painter_mode(PAINTER_MODE_FLOAT);
+                PostMessageW(hwnd, WM_MODEL_LOAD_LOG, 0, (LPARAM)_strdup("Painter mode: FLOAT selected\r\n"));
+                if (g_model && g_obs) { compute_obs_vertices(g_model, g_obs); if (g_order) compute_painter_order(g_model, g_order); }
                 InvalidateRect(hwnd, NULL, TRUE);
             }
-            else if (wParam == '4') {
-                g_painter_order_version = 4;
-                PostMessageW(hwnd, WM_MODEL_LOAD_LOG, 0, (LPARAM)_strdup("Painter order: V4 selected\r\n"));
-                if (g_model) {
-                    int *ord = (int*)malloc(sizeof(int) * g_model->face_count);
-                    if (ord) {
-                        if (compute_painter_order(g_model, ord)) {
-                            char exe_path[MAX_PATH]; GetModuleFileNameA(NULL, exe_path, MAX_PATH); char exe_dir[MAX_PATH]; strncpy(exe_dir, exe_path, MAX_PATH); char* lastbs = strrchr(exe_dir, '\\'); if (lastbs) *lastbs = '\0'; char ofn[1024]; snprintf(ofn, sizeof(ofn), "%s\\equ_order_runtime_v4.csv", exe_dir);
-                            FILE* of = fopen(ofn, "w"); if (of) {
-                                fprintf(of, "# version,4,faces,%d\\n", g_model->face_count);
-                                for (int ii = 0; ii < g_model->face_count; ++ii) fprintf(of, "%d\\n", ord[ii]);
-                                fclose(of);
-                            }
-                            char logbuf[1024]; snprintf(logbuf, sizeof(logbuf), "Painter order: wrote %s\\r\\n", ofn);
-                            PostMessageW(hwnd, WM_MODEL_LOAD_LOG, 0, (LPARAM)_strdup(logbuf));
-                            // Also produce a pairwise debug CSV to explain decisions (for parity with Pascal TestComplet)
-                            char dbgfn[1024]; snprintf(dbgfn, sizeof(dbgfn), "%s\\pair_debug_v4.csv", exe_dir); if (dump_pairwise_debug(g_model, 4, dbgfn)) { char dbglog[1024]; snprintf(dbglog, sizeof(dbglog), "Painter pairwise debug: wrote %s\\r\\n", dbgfn); PostMessageW(hwnd, WM_MODEL_LOAD_LOG, 0, (LPARAM)_strdup(dbglog)); } else { char dbglog[1024]; snprintf(dbglog, sizeof(dbglog), "Painter pairwise debug: failed to write %s\\r\\n", dbgfn); PostMessageW(hwnd, WM_MODEL_LOAD_LOG, 0, (LPARAM)_strdup(dbglog)); }
-                        }
-                        free(ord);
-                    }
-                }
-                InvalidateRect(hwnd, NULL, TRUE);
-            }
+
             // Distance controls: A/a decreases by 10%, Z/z increases by 10%
             else if (wParam == 'A' || wParam == 'a') {
                 s_dist *= 0.9f; if (s_dist < 0.01f) s_dist = 0.01f; changed = 1;
@@ -890,18 +830,8 @@ static LRESULT CALLBACK ParamsWndProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM 
         swprintf(buf, 64, L"%.0f", s_aw); hEditAW = CreateWindowExW(0, L"EDIT", buf, WS_CHILD|WS_VISIBLE|WS_BORDER|ES_LEFT, 140,100,180,24,dlg,(HMENU)103,GetModuleHandle(NULL),NULL);
         swprintf(buf, 64, L"%.3f", s_dist); hEditDist = CreateWindowExW(0, L"EDIT", buf, WS_CHILD|WS_VISIBLE|WS_BORDER|ES_LEFT, 140,140,180,24,dlg,(HMENU)104,GetModuleHandle(NULL),NULL);
         swprintf(buf, 64, L"%.1f", s_proj_scale); HWND hEditProjScale = CreateWindowExW(0, L"EDIT", buf, WS_CHILD|WS_VISIBLE|WS_BORDER|ES_LEFT, 140,180,180,24,dlg,(HMENU)106,GetModuleHandle(NULL),NULL);
-        // painter version combo
-        HWND hComboPainter = CreateWindowExW(0, L"COMBOBOX", NULL, WS_CHILD|WS_VISIBLE|CBS_DROPDOWNLIST|WS_VSCROLL, 140,210,180,120,dlg,(HMENU)107,GetModuleHandle(NULL),NULL);
-        SendMessageW(hComboPainter, CB_ADDSTRING, 0, (LPARAM)L"V1 - adjacent swap (original)");
-        SendMessageW(hComboPainter, CB_ADDSTRING, 0, (LPARAM)L"V2 - pairwise compare");
-        SendMessageW(hComboPainter, CB_ADDSTRING, 0, (LPARAM)L"V3 - V1 without Tests 6/7");
-        SendMessageW(hComboPainter, CB_ADDSTRING, 0, (LPARAM)L"V4 - Delphi TestComplet algorithm");
-        // future versions can be added here
-        int sel = (g_painter_order_version == 2) ? 1 : (g_painter_order_version == 3) ? 2 : (g_painter_order_version == 4) ? 3 : 0;
-        SendMessageW(hComboPainter, CB_SETCURSEL, (WPARAM)sel, 0);
-
         // painter mode combo (GS3Dp FAST / FIXED / FLOAT equivalence)
-        HWND hComboPainterMode = CreateWindowExW(0, L"COMBOBOX", NULL, WS_CHILD|WS_VISIBLE|CBS_DROPDOWNLIST|WS_VSCROLL, 140,240,180,120,dlg,(HMENU)108,GetModuleHandle(NULL),NULL);
+        HWND hComboPainterMode = CreateWindowExW(0, L"COMBOBOX", NULL, WS_CHILD|WS_VISIBLE|CBS_DROPDOWNLIST|WS_VSCROLL, 140,210,180,120,dlg,(HMENU)108,GetModuleHandle(NULL),NULL);
         SendMessageW(hComboPainterMode, CB_ADDSTRING, 0, (LPARAM)L"FAST - simple sort (fast)");
         SendMessageW(hComboPainterMode, CB_ADDSTRING, 0, (LPARAM)L"FIXED - Fixed32 pipeline");
         SendMessageW(hComboPainterMode, CB_ADDSTRING, 0, (LPARAM)L"FLOAT - float painter");
@@ -914,8 +844,7 @@ static LRESULT CALLBACK ParamsWndProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM 
         CreateWindowExW(0, L"STATIC", L"Angle W:", WS_CHILD|WS_VISIBLE, 20,100,110,24,dlg,NULL,GetModuleHandle(NULL),NULL);
         CreateWindowExW(0, L"STATIC", L"Distance:", WS_CHILD|WS_VISIBLE, 20,140,110,24,dlg,NULL,GetModuleHandle(NULL),NULL);
         CreateWindowExW(0, L"STATIC", L"Projection scale:", WS_CHILD|WS_VISIBLE, 20,180,110,24,dlg,NULL,GetModuleHandle(NULL),NULL);
-        CreateWindowExW(0, L"STATIC", L"Painter order:", WS_CHILD|WS_VISIBLE, 20,210,110,24,dlg,NULL,GetModuleHandle(NULL),NULL);
-        CreateWindowExW(0, L"STATIC", L"Painter mode:", WS_CHILD|WS_VISIBLE, 20,240,110,24,dlg,NULL,GetModuleHandle(NULL),NULL);
+        CreateWindowExW(0, L"STATIC", L"Painter mode:", WS_CHILD|WS_VISIBLE, 20,210,110,24,dlg,NULL,GetModuleHandle(NULL),NULL);
         // buttons (moved down to fit extra combo)
         CreateWindowExW(0, L"BUTTON", L"OK", WS_CHILD|WS_VISIBLE|BS_DEFPUSHBUTTON, 60,300,90,28,dlg,(HMENU)201,GetModuleHandle(NULL),NULL);
         CreateWindowExW(0, L"BUTTON", L"Cancel", WS_CHILD|WS_VISIBLE, 200,300,90,28,dlg,(HMENU)202,GetModuleHandle(NULL),NULL);
@@ -930,14 +859,6 @@ static LRESULT CALLBACK ParamsWndProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM 
             GetWindowTextW(hEditDist, buf, 64); s_dist = (float)wcstod(buf, NULL);
             GetWindowTextW((HWND)GetDlgItem(dlg, 106), buf, 64); s_proj_scale = (float)wcstod(buf, NULL);
             if (s_proj_scale < 1.0f) s_proj_scale = 1.0f;
-            // painter version selection from combo (ID 107)
-            int sel = (int)SendMessageW((HWND)GetDlgItem(dlg, 107), CB_GETCURSEL, 0, 0);
-            if (sel >= 0) {
-                g_painter_order_version = sel + 1; // combo index 0 -> V1, 1 -> V2
-                char* msg = _strdup("Painter order selection changed via Parameters dialog\r\n");
-                HWND ownerWnd = GetWindow(dlg, GW_OWNER); if (!ownerWnd) ownerWnd = GetParent(dlg); if (!ownerWnd) ownerWnd = GetAncestor(dlg, GA_ROOTOWNER);
-                if (ownerWnd) PostMessageW(ownerWnd, WM_MODEL_LOAD_LOG, 0, (LPARAM)msg); else free(msg);
-            }
             // painter mode selection from combo (ID 108)
             int psel = (int)SendMessageW((HWND)GetDlgItem(dlg, 108), CB_GETCURSEL, 0, 0);
             if (psel >= 0) {
