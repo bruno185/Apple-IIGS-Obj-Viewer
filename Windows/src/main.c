@@ -71,8 +71,24 @@ int main(int argc, char** argv) {
                 /* proj_scale handlers remain below */
                 else if (k == SDLK_PERIOD) { proj_scale *= 1.1f; if (proj_scale > 2000.0f) proj_scale = 2000.0f; camera_changed = 1; printf("Projection scale increased: %.1f\n", proj_scale); snprintf(titlebuf, sizeof(titlebuf), "GS3Dp Viewer - proj_scale=%.1f", proj_scale); SDL_SetWindowTitle(win, titlebuf); }
                 else if (k == SDLK_COMMA) { proj_scale *= 0.9f; if (proj_scale < 10.0f) proj_scale = 10.0f; camera_changed = 1; printf("Projection scale decreased: %.1f\n", proj_scale); snprintf(titlebuf, sizeof(titlebuf), "GS3Dp Viewer - proj_scale=%.1f", proj_scale); SDL_SetWindowTitle(win, titlebuf); }
+                else if (k == SDLK_b) { set_cull_back_faces(!get_cull_back_faces()); printf("Back-face culling: %s\n", get_cull_back_faces() ? "ON" : "OFF"); camera_changed = 1; }
+                else if (k == SDLK_d) { inspect_faces_before(m); camera_changed = 1; }
+                else if (k == SDLK_o) {
+                    // Inspect polygon overlap
+                    printf("Enter two face IDs (f1 f2) or empty to cancel: "); char buf[128]; if (fgets(buf, sizeof(buf), stdin)) {
+                        int f1=-1,f2=-1; if (sscanf(buf, "%d %d", &f1, &f2) == 2) {
+                            int ov = projected_polygons_overlap(m, f1, f2);
+                            printf("Projected overlap: %s\n", ov ? "YES" : "NO");
+                            if (ov) {
+                                printf("Press Y to preview highlighting faces, any other key to skip: "); char c = getchar(); if (c=='Y' || c=='y') { int arr[2] = {f1,f2}; set_highlight_faces(arr, 2, 10); wireframe = 1; }
+                            }
+                        } else { printf("Invalid input\n"); }
+                    }
+                    camera_changed = 1;
+                }
+                else if (k == SDLK_l) { display_model_face_ids(m); camera_changed = 1; }
                 else if (k == SDLK_w) { wireframe = !wireframe; }
-                else if (k == SDLK_s) { save_screenshot(win, rend, "viewer_capture.bmp"); }
+                else if (k == SDLK_s) { /* SHIFT-S will inspect_after, plain 's' saves screenshot */ if (ev.key.keysym.mod & KMOD_SHIFT) { inspect_faces_after(m); camera_changed = 1; } else { save_screenshot(win, rend, "viewer_capture.bmp"); } }
             }
         }
         if (camera_changed) set_observer_params(ah, av, aw, dist);
@@ -116,11 +132,12 @@ int main(int argc, char** argv) {
             }
             Uint8 r = (Uint8)((fidx*37)&255), g = (Uint8)((fidx*83)&255), b=(Uint8)((fidx*191)&255);
             if (wireframe) draw_polygon_outline(rend, xs, ys, f->count, r,g,b); else draw_filled_polygon(rend, xs, ys, f->count, r,g,b);
-        }
-
-        SDL_RenderPresent(rend);
-        SDL_Delay(16);
-    }
-    SDL_DestroyRenderer(rend); SDL_DestroyWindow(win); SDL_Quit(); free(order); free_model(m); free(obs);
-    return 0;
+            /* overlay highlights (inspectors) */
+            int hcol = face_is_highlighted(fidx);
+            if (hcol) {
+                Uint8 hr = (hcol==6)?255:0;
+                Uint8 hg = (hcol==6)?165:255;
+                Uint8 hb = (hcol==6)?0:192;
+                draw_polygon_outline(rend, xs, ys, f->count, hr, hg, hb);
+            }
 }

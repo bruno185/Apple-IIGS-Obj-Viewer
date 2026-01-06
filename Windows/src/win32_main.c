@@ -302,6 +302,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             else if (wParam == 0x57) { g_wireframe = !g_wireframe; InvalidateRect(hwnd, NULL, TRUE); }
             else if ((wParam == 'O' && (GetKeyState(VK_CONTROL) & 0x8000)) ) { on_file_open(hwnd); }
             else if ((wParam == 'Q' && (GetKeyState(VK_CONTROL) & 0x8000)) ) { PostQuitMessage(0); }
+            else if ((wParam == 'D') && (GetKeyState(VK_SHIFT) & 0x8000)) {
+                if (g_model) {
+                    inspect_faces_before(g_model);
+                    PostMessageW(hwnd, WM_MODEL_LOAD_LOG, 0, (LPARAM)_strdup("Inspector: inspect_faces_before executed\r\n"));
+                }
+                changed = 1; InvalidateRect(hwnd, NULL, TRUE);
+            }
             else if (wParam == 'D') {
                 if (g_model) {
                     dumpFaceEquationsCSV_Model(g_model);
@@ -327,6 +334,24 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                         free(ord);
                     }
                 }
+                InvalidateRect(hwnd, NULL, TRUE);
+            }
+            else if (wParam == 'B') {
+                set_cull_back_faces(!get_cull_back_faces());
+                char mmsg[128]; snprintf(mmsg, sizeof(mmsg), "Back-face culling: %s\r\n", get_cull_back_faces() ? "ON" : "OFF");
+                PostMessageW(hwnd, WM_MODEL_LOAD_LOG, 0, (LPARAM)_strdup(mmsg));
+                InvalidateRect(hwnd, NULL, TRUE);
+            }
+            else if (wParam == 'S' && (GetKeyState(VK_SHIFT) & 0x8000)) {
+                if (g_model) { inspect_faces_after(g_model); PostMessageW(hwnd, WM_MODEL_LOAD_LOG, 0, (LPARAM)_strdup("Inspector: inspect_faces_after executed\r\n")); }
+                InvalidateRect(hwnd, NULL, TRUE);
+            }
+            else if (wParam == 'O' && (GetKeyState(VK_SHIFT) & 0x8000)) {
+                if (g_model) { inspect_polygons_overlap(g_model, NULL, ""); PostMessageW(hwnd, WM_MODEL_LOAD_LOG, 0, (LPARAM)_strdup("Inspector: inspect_polygons_overlap executed\r\n")); }
+                InvalidateRect(hwnd, NULL, TRUE);
+            }
+            else if (wParam == 'L') {
+                if (g_model) { display_model_face_ids(g_model); PostMessageW(hwnd, WM_MODEL_LOAD_LOG, 0, (LPARAM)_strdup("Inspector: display_model_face_ids executed\r\n")); }
                 InvalidateRect(hwnd, NULL, TRUE);
             }
             else if (wParam == '2') {
