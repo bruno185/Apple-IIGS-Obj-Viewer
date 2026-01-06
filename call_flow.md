@@ -16,7 +16,7 @@
   - → 🔧 **`loadModel3D(model, filename)`** — orchestrates model loading
     - → 🔧 **`readVertices()`** — read `v x y z` into Fixed arrays
     - → 🔧 **`readFaces_model()`** — parse faces into packed index buffers
-    - → 🔧 **`computeModelBoundingSphere()`** — compute model bounding sphere (centroid + radius) **O(n)** (done once)
+    - → 🔧 **(archived) `computeModelBoundingSphere()`** — previously computed centroid+radius for auto-fit; functionality removed/archived (see `chutier.txt`)
 
 ### Parameter parsing / Auto-fit
 
@@ -45,7 +45,7 @@
     - 🔧 **`painter_newell_sancha()`** — sort faces by depth and correct ambiguous order (qsort + corrections). When back-face culling is enabled, the painter builds and sorts a list limited to faces with `display_flag == 1` (visible faces), performs order corrections only on that sub-list for efficiency and correctness, and appends culled faces afterward to preserve `sorted_face_indices` stability.
       - Collects *inconclusive pairs* (pairs of faces where order is ambiguous) into an **in-memory buffer** for later inspection; note: the buffer `inconclusive_pairs` is now a global buffer (preallocated for performance) used by diagnostic and framing helpers.
 
-    - 🔧 **`processModelWireframe(model, &params, filename)`** — lightweight wireframe processing: transforms and projects vertices and sets face visibility only (no per-face depth/sorting); used for wireframe/frame-only display to improve speed.
+    - ⚠️ **Wireframe mode** — handled via the `framePolyOnly` flag and `drawPolygons()` (no separate `processModelWireframe()` function in the current codebase). Use `framePolyOnly=1` to render wireframe previews.
 
 - 🔧 **`drawPolygons(model, faces, face_count, vert_count)`** — render loop
   - uses sorted faces; for each face builds QuickDraw polygon from `vtx->x2d/y2d` (these already reflect any model-space auto-scaling applied ahead of time; auto-fit is disabled — archived implementation is in `chutier.txt`). When back-face culling is active, `faces->sorted_face_indices` contains visible faces first (sorted) followed by culled faces; `drawPolygons` still checks `display_flag` and skips any face with `display_flag == 0` at draw time.
@@ -72,13 +72,15 @@
 - Bounding-sphere metric removed; auto-fit uses bbox heuristic (O(n) at load remains but is simpler)
 
 - 🔧 **Non-destructive backup support removed** — per-vertex backup API was removed to simplify flow
-- 🔧 **`processModelWireframe(model, &params, filename)`** — lightweight wireframe processing (transform & project only) used for fast wireframe/frame-only rendering
+- 🔧 **Wireframe mode** — implemented via the `framePolyOnly` flag and `drawPolygons()` (no separate `processModelWireframe()` function)
 - 🔧 **`destroyModel3D(Model3D* model)`** — frees all memory allocated by `createModel3D()`; must be called to avoid leaks
 - 🔧 **`readVertices()` / `readFaces_model()`** — file parsing helpers
 - 🔧 **`frameInconclusivePairs(Model3D* model)`** — utility: frames in white all polygons currently recorded in the global `inconclusive_pairs` buffer (diagnostic; no runtime side effects beyond rendering) 
 - 🔧 **`projected_polygons_overlap(Model3D* model, int f1, int f2)`** — screen-space test that returns 1 if two faces' projected 2D polygons *overlap* (proper edge intersection or containment), **0 if disjoint**. Important: *touching-only* cases (shared edge or single-vertex contact) are considered **NON-overlap** and return 0. The algorithm uses integer segment intersection (proper intersection only) then ray-casting containment; points on edges are treated as outside.
-- 🔧 **`inspect_polygons_overlap(Model3D* model, ObserverParams* params, const char* filename)`** — interactive wrapper bound to `O`/`o`: prints an explanation, prompts for two face IDs, reports overlap status (YES/NO), and asks whether to preview the faces; **default** on empty input (ENTER) is to show the model in wireframe and overlay the two faces colored (green/orange) with their IDs visible. The overlay respects painter stacking when possible.
-- 🔧 **`display_model_face_ids(Model3D* model, ObserverParams* params, const char* filename)`** — label mode bound to `L`/`l`: draws the model in wireframe and overlays each face's ID centered on that face (uses `drawFace(..., show_index=1)`), useful for debugging face ordering and references.
+- 🔧 `void inspect_faces_before(Model3D* model, ObserverParams* params, const char* filename)` — `GS3Dp.cc:2032` — interactive wrapper bound to `D`/`d`: prints a compact per-face diagnostic and offers a wireframe preview that highlights faces placed BEFORE a selected face (misplaced faces highlighted).
+- 🔧 `void inspect_faces_after(Model3D* model, ObserverParams* params, const char* filename)` — `GS3Dp.cc:2219` — interactive wrapper bound to `S`/`s`: prints faces placed AFTER a selected face that should be BEFORE it and offers a wireframe preview with highlights.
+- 🔧 `void inspect_polygons_overlap(Model3D* model, ObserverParams* params, const char* filename)` — `GS3Dp.cc:2371` — interactive wrapper bound to `O`/`o`: prompts for two face IDs, reports overlap status (YES/NO), and optionally previews the two faces (green/orange); default on ENTER shows the entire model in wireframe with the two faces highlighted.
+- 🔧 `void display_model_face_ids(Model3D* model, ObserverParams* params, const char* filename)` — `GS3Dp.cc:2449` — label mode bound to `L`/`l`: draws the model in wireframe and overlays each face's ID centered on that face (uses `drawFace(..., show_index=1)`), useful for debugging face ordering and references.
 
 **Notes:** `adjustDistanceFast()` (earlier fast-adjust prototype) was removed — automatic distance estimation has been disabled; distance adjustments are manual.
 
@@ -94,40 +96,47 @@
 ## Function signatures & file:line references
 
 ### Core / Public APIs
-- 🔧 `Model3D* createModel3D(void)` — `GS3Dp.cc:1566`
-- 🔧 `void destroyModel3D(Model3D* model)` — `GS3Dp.cc:1887`
-- 🔧 `int loadModel3D(Model3D* model, const char* filename)` — `GS3Dp.cc:1947`
-- 🔧 `int readVertices(const char* filename, VertexArrays3D* vtx, int max_vertices, Model3D* owner)` — `GS3Dp.cc:2314`
-- 🔧 `int readFaces_model(const char* filename, Model3D* model)` — `GS3Dp.cc:2444`
+- 🔧 `Model3D* createModel3D(void)` — `GS3Dp.cc:2540`
+- 🔧 `void destroyModel3D(Model3D* model)` — `GS3Dp.cc:2860`
+- 🔧 `int loadModel3D(Model3D* model, const char* filename)` — `GS3Dp.cc:2920`
+- 🔧 `int readVertices(const char* filename, VertexArrays3D* vtx, int max_vertices, Model3D* owner)` — `GS3Dp.cc:3220`
+- 🔧 `int readFaces_model(const char* filename, Model3D* model)` — `GS3Dp.cc:3351`
 
 ### Rendering / Painter
-- 🔧 `void processModelFast(Model3D* model, ObserverParams* params, const char* filename)` — `GS3Dp.cc:2089`
-- 🔧 `void processModelWireframe(Model3D* model, ObserverParams* params, const char* filename)` — `GS3Dp.cc:2204`
-- 🔧 `void calculateFaceDepths(Model3D* model, Face3D* faces, int face_count)` — `GS3Dp.cc:2598`
-- 🔧 `void painter_newell_sancha(Model3D* model, int face_count)` — `GS3Dp.cc:722`
-- 🔧 `void painter_newell_sancha_fast(Model3D* model, int face_count)` — `GS3Dp.cc:682`
-- 🔧 `void painter_newell_sancha_float(Model3D* model, int face_count)` — `GS3Dp.cc:1209`
-- 🔧 `void drawPolygons(Model3D* model, int* vertex_count, int face_count, int vertex_count_total)` — `GS3Dp.cc:3026`
-- 🔧 `void drawFace(Model3D* model, int face_id, int fillPenPat, int show_index)` — `GS3Dp.cc:3198`
-- 🔧 `void frameInconclusivePairs(Model3D* model)` — `GS3Dp.cc:3163`
+- 🔧 `void processModelFast(Model3D* model, ObserverParams* params, const char* filename)` — `GS3Dp.cc:3077`
+- 🔧 `void calculateFaceDepths(Model3D* model, Face3D* faces, int face_count)` — `GS3Dp.cc:3517`
+- 🔧 `void painter_newell_sancha_fast(Model3D* model, int face_count)` — `GS3Dp.cc:732`
+- 🔧 `void painter_newell_sancha(Model3D* model, int face_count)` — `GS3Dp.cc:772`
+- 🔧 `void painter_newell_sancha_float(Model3D* model, int face_count)` — `GS3Dp.cc:1325`
+- 🔧 `void drawFace(Model3D* model, int face_id, int fillPenPat, int show_index)` — `GS3Dp.cc:3794`
+- 🔧 `void drawPolygons(Model3D* model, int* vertex_count, int face_count, int vertex_count_total)` — `GS3Dp.cc:3913`
+- 🔧 `void frameInconclusivePairs(Model3D* model)` — `GS3Dp.cc:4055`
+
+> Note: Wireframe mode is handled by the `framePolyOnly` flag and using `drawPolygons()`; there is no separate `processModelWireframe()` implementation in the current file.
 
 ### Utilities / Helpers
 - 🔧 `void fitModelToView(Model3D* model, ObserverParams* params, float target_max_dim, float margin, float percentile, int center_flag)` — **removed from `GS3Dp.cc`; implementation archived in `chutier.txt`**
-- 🔧 `void dumpFaceEquationsCSV(Model3D* model, const char* csv_filename, int alt_format)` — `GS3Dp.cc:2751`
-- 🔧 `void getObserverParams(ObserverParams* params, Model3D* model)` — `GS3Dp.cc:1999`
-- 🔧 `void compute2DFromObserver(Model3D* model, int angle_w)` — `GS3Dp.cc:3262`
-- 🔧 `void DoColor()` — `GS3Dp.cc:3289`
-- 🔧 `void DoText()` — `GS3Dp.cc:3318`
+- 🔧 `void dumpFaceEquationsCSV(Model3D* model, const char* csv_filename, int alt_format)` — `GS3Dp.cc:3671`
+- 🔧 `void debug_two_faces(Model3D* model, int f1, int f2)` — `GS3Dp.cc:762` — small debug helper to preview two faces side-by-side (used by painter diagnostics)
+- 🔧 `void getObserverParams(ObserverParams* params, Model3D* model)` — `GS3Dp.cc:2971`
+- 🔧 `void compute2DFromObserver(Model3D* model, int angle_w)` — `GS3Dp.cc:4155`
+- 🔧 `void DoColor()` — `GS3Dp.cc:4183`
+- 🔧 `void DoText()` — `GS3Dp.cc:4213`
+- 🔧 `void inspect_faces_before(Model3D* model, ObserverParams* params, const char* filename)` — `GS3Dp.cc:2032`
+- 🔧 `void inspect_faces_after(Model3D* model, ObserverParams* params, const char* filename)` — `GS3Dp.cc:2219`
+- 🔧 `void inspect_polygons_overlap(Model3D* model, ObserverParams* params, const char* filename)` — `GS3Dp.cc:2371`
+- 🔧 `void display_model_face_ids(Model3D* model, ObserverParams* params, const char* filename)` — `GS3Dp.cc:2441`
 
 ### Internal / Small helpers (static/inline)
 - 🔧 `static void ensure_vertex_capacity(int vcount)` — `GS3Dp.cc:98`
 - 🔧 `static void ensure_face_capacity(int face_count)` — `GS3Dp.cc:110`
 - 🔧 `static void ensure_order_capacity(int face_count)` — `GS3Dp.cc:132`
-- 🔧 `static inline Fixed32 sin_deg_int(int deg)` — `GS3Dp.cc:251`
-- 🔧 `static inline Fixed32 cos_deg_int(int deg)` — `GS3Dp.cc:256`
-- 🔧 `static inline int FIXED_ROUND_TO_INT(Fixed32 x)` — `GS3Dp.cc:267`
-- 🔧 `static inline int normalize_deg(int deg)` — `GS3Dp.cc:296`
-- 🔧 `static int cmp_faces_by_zmean(const void* pa, const void* pb)` — `GS3Dp.cc:654`
+- 🔧 `static inline Fixed32 sin_deg_int(int deg)` — `GS3Dp.cc:261`
+- 🔧 `static inline Fixed32 cos_deg_int(int deg)` — `GS3Dp.cc:266`
+- 🔧 `static inline int FIXED_ROUND_TO_INT(Fixed32 x)` — `GS3Dp.cc:277`
+- 🔧 `int prepare_inspector_sort(Model3D* m, int fc)` — `GS3Dp.cc:2040` — internal helper used by `inspect_faces_before/after` to prepare sorting lists.
+- 🔧 `static inline int normalize_deg(int deg)` — `GS3Dp.cc:303`
+- 🔧 `static int cmp_faces_by_zmean(const void* pa, const void* pb)` — `GS3Dp.cc:673`
 
 ---
 
